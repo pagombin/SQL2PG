@@ -41,6 +41,7 @@
     </div>
     <div class="flex items-center gap-3">
         <span id="migration-id-badge" class="text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-400"></span>
+        <button onclick="startNewMigration()" class="btn text-xs px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-600">New Migration</button>
         <a href="/" class="btn text-xs px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600">Dashboard</a>
     </div>
 </header>
@@ -234,8 +235,20 @@ function renderEvents(events) {
 function updateState(data) {
     STATE = data;
     document.getElementById('migration-id-badge').textContent = 'ID: ' + (data.migration_id || '');
-    document.getElementById('phase-badge').textContent = (data.phase || '').replace(/_/g, ' ');
+    const phaseText = (data.phase || '').replace(/_/g, ' ');
+    const badge = document.getElementById('phase-badge');
+    badge.textContent = phaseText;
+    if (data.phase === 'failed') {
+        badge.className = 'text-xs px-2 py-1 rounded-full bg-red-900 text-red-400';
+    } else if (data.phase === 'completed') {
+        badge.className = 'text-xs px-2 py-1 rounded-full bg-green-900 text-green-400';
+    } else {
+        badge.className = 'text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-400';
+    }
     renderEvents(data.events || []);
+    if (data.phase === 'failed' && data.error_message) {
+        toast('Migration failed: ' + data.error_message, 'error');
+    }
 }
 
 function fmtBytes(b) {
@@ -248,13 +261,50 @@ function fmtBytes(b) {
 function fmtNum(n) { return (n||0).toLocaleString(); }
 
 // ── Init ───────────────────────────────────────────────────────────
+const PHASE_TO_STEP = {
+    'created': 0, 'discovering_source': 0, 'source_discovered': 1,
+    'selecting_databases': 1, 'databases_selected': 2,
+    'discovering_target': 2, 'target_discovered': 3,
+    'analyzing_compatibility': 4, 'compatibility_reviewed': 4,
+    'validating_kafka': 5, 'kafka_validated': 5,
+    'creating_schema': 6, 'schema_created': 6,
+    'deploying_connectors': 7, 'connectors_running': 8,
+    'snapshot_in_progress': 8, 'snapshot_complete': 8,
+    'applying_constraints': 8, 'constraints_applied': 8,
+    'verifying': 8, 'verified': 8, 'streaming': 8,
+    'completed': 8, 'failed': 0,
+};
+
 async function init() {
     try {
-        const data = await api('/api/migrations', {method:'POST'});
-        MID = data.migration_id;
+        const listData = await api('/api/migrations');
+        const active = (listData.migrations || []).find(m =>
+            m.phase && m.phase !== 'completed' && m.phase !== 'failed'
+        );
+
+        if (active) {
+            MID = active.migration_id;
+            toast('Resuming migration ' + MID, 'info');
+        } else {
+            const data = await api('/api/migrations', {method:'POST'});
+            MID = data.migration_id;
+        }
+
         const state = await api(`/api/migrations/${MID}`);
         updateState(state);
-        showStep(0);
+
+        const step = PHASE_TO_STEP[state.phase] ?? 0;
+        showStep(step);
+
+        if (state.phase === 'source_discovered' && state.source_cluster) {
+            renderDatabaseList(state.source_cluster);
+        }
+        if (state.phase === 'compatibility_reviewed' && state.compatibility_report) {
+            renderCompatibility(state.compatibility_report);
+        }
+        if (state.phase === 'kafka_validated' && state.sizing_report) {
+            renderKafka(state.sizing_report);
+        }
     } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -583,6 +633,18 @@ async function completeMigration() {
         updateState(data);
         toast('Migration completed!', 'success');
     } catch(e) { toast(e.message,'error'); }
+}
+
+async function startNewMigration() {
+    if (!confirm('Start a new migration? The current wizard state will be left as-is.')) return;
+    try {
+        const data = await api('/api/migrations', {method:'POST'});
+        MID = data.migration_id;
+        const state = await api(`/api/migrations/${MID}`);
+        updateState(state);
+        showStep(0);
+        toast('New migration created: ' + MID, 'info');
+    } catch(e) { toast(e.message, 'error'); }
 }
 
 init();

@@ -177,9 +177,6 @@ def map_column_type(
         if dtype == "bit" and col.numeric_precision:
             pg_type = f"BIT({col.numeric_precision})"
 
-        if dtype in ("char", "varchar") and col.character_maximum_length:
-            pg_type = f"{pg_type}({col.character_maximum_length})"
-
         return TypeMapping(
             mysql_type=dtype, mysql_column_type=ctype,
             pg_type=pg_type, severity=severity, note=note,

@@ -58,50 +58,52 @@ def discover_mysql_cluster(
         host=host, port=port, user=username, password=password,
         ssl_disabled=False, connection_timeout=30,
     )
-    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor = conn.cursor(dictionary=True)
 
-    cursor.execute("SELECT VERSION() AS v")
-    version = cursor.fetchone()["v"]
+        cursor.execute("SELECT VERSION() AS v")
+        version = cursor.fetchone()["v"]
 
-    cursor.execute("SELECT @@sql_mode AS m")
-    sql_mode = cursor.fetchone()["m"]
+        cursor.execute("SELECT @@sql_mode AS m")
+        sql_mode = cursor.fetchone()["m"]
 
-    cursor.execute("SELECT @@character_set_server AS cs")
-    global_charset = cursor.fetchone()["cs"]
+        cursor.execute("SELECT @@character_set_server AS cs")
+        global_charset = cursor.fetchone()["cs"]
 
-    cursor.execute(
-        "SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME "
-        "FROM information_schema.SCHEMATA "
-        "ORDER BY SCHEMA_NAME"
-    )
-    all_schemas = cursor.fetchall()
-
-    databases: list[DiscoveredDatabase] = []
-    for row in all_schemas:
-        db_name = row["SCHEMA_NAME"]
-        if db_name.lower() in SYSTEM_DATABASES:
-            continue
-        if database_filter and db_name not in database_filter:
-            continue
-
-        db = DiscoveredDatabase(
-            name=db_name,
-            charset=row["DEFAULT_CHARACTER_SET_NAME"],
-            collation=row["DEFAULT_COLLATION_NAME"],
+        cursor.execute(
+            "SELECT SCHEMA_NAME, DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME "
+            "FROM information_schema.SCHEMATA "
+            "ORDER BY SCHEMA_NAME"
         )
+        all_schemas = cursor.fetchall()
 
-        db.tables = _discover_tables(cursor, db_name)
-        _discover_columns(cursor, db_name, db.tables)
-        _discover_indexes(cursor, db_name, db.tables)
-        _discover_foreign_keys(cursor, db_name, db.tables)
-        _discover_triggers(cursor, db_name, db.tables)
-        db.views = _discover_views(cursor, db_name)
-        db.routines = _discover_routines(cursor, db_name)
+        databases: list[DiscoveredDatabase] = []
+        for row in all_schemas:
+            db_name = row["SCHEMA_NAME"]
+            if db_name.lower() in SYSTEM_DATABASES:
+                continue
+            if database_filter and db_name not in database_filter:
+                continue
 
-        databases.append(db)
+            db = DiscoveredDatabase(
+                name=db_name,
+                charset=row["DEFAULT_CHARACTER_SET_NAME"],
+                collation=row["DEFAULT_COLLATION_NAME"],
+            )
 
-    cursor.close()
-    conn.close()
+            db.tables = _discover_tables(cursor, db_name)
+            _discover_columns(cursor, db_name, db.tables)
+            _discover_indexes(cursor, db_name, db.tables)
+            _discover_foreign_keys(cursor, db_name, db.tables)
+            _discover_triggers(cursor, db_name, db.tables)
+            db.views = _discover_views(cursor, db_name)
+            db.routines = _discover_routines(cursor, db_name)
+
+            databases.append(db)
+
+        cursor.close()
+    finally:
+        conn.close()
 
     return DiscoveredCluster(
         host=host,

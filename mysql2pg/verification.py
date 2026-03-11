@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import time
-from dataclasses import asdict
+from decimal import Decimal as _Decimal
 from datetime import datetime
 from typing import Any
 
@@ -292,6 +290,8 @@ def compare_sample_data(
                     row[k] = v.isoformat()
                 elif isinstance(v, set):
                     row[k] = list(v)
+                elif isinstance(v, _Decimal):
+                    row[k] = float(v)
         result["source_rows"] = src_rows
         my_cursor.close()
         my_conn.close()
@@ -326,6 +326,8 @@ def compare_sample_data(
                     row_dict[col_names[i]] = val.hex()
                 elif hasattr(val, "isoformat"):
                     row_dict[col_names[i]] = val.isoformat()
+                elif isinstance(val, _Decimal):
+                    row_dict[col_names[i]] = float(val)
                 else:
                     row_dict[col_names[i]] = val
             tgt_rows.append(row_dict)

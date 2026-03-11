@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import enum
-import json
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any

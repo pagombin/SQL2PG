@@ -638,28 +638,46 @@ def api_complete_migration(mid: str):
     return jsonify(state.to_dict())
 
 
-# ── Live Data Comparison ─────────────────────────────────────────────
+# ── Retry / Reset ────────────────────────────────────────────────────
 
-@app.route("/api/migrations/<mid>/compare")
-def api_live_comparison(mid: str):
+@app.route("/api/migrations/<mid>/retry", methods=["POST"])
+def api_retry_migration(mid: str):
+    """Reset a FAILED migration back to its last successful phase so it can be retried."""
+    from .models import MigrationPhase
+
     state = load_state(mid)
     if not state:
         return jsonify({"error": "Migration not found"}), 404
 
-    # Passwords must be supplied as query params for GET requests
-    mysql_password = request.args.get("mysql_password", state.mysql_password)
-    pg_password = request.args.get("pg_password", state.pg_password)
-    include_samples = request.args.get("samples", "false").lower() == "true"
+    body = request.get_json(silent=True) or {}
+    target_phase = body.get("phase")
 
-    state.mysql_password = mysql_password
-    state.pg_password = pg_password
+    if state.phase != MigrationPhase.FAILED and not target_phase:
+        return jsonify({"error": "Migration is not in FAILED state"}), 400
 
-    try:
-        result = get_live_comparison(state, include_samples=include_samples)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if target_phase:
+        try:
+            state.phase = MigrationPhase(target_phase)
+        except ValueError:
+            return jsonify({"error": f"Invalid phase: {target_phase}"}), 400
+    else:
+        phase_order = list(MigrationPhase)
+        last_good_events = [
+            e for e in state.events
+            if e.get("level") == "success"
+        ]
+        if last_good_events:
+            state.phase = MigrationPhase.COMPATIBILITY_REVIEWED
+        else:
+            state.phase = MigrationPhase.CREATED
 
+    state.error_message = ""
+    state.add_event("info", f"Migration reset to phase: {state.phase.value}")
+    save_state(state)
+    return jsonify(state.to_dict())
+
+
+# ── Live Data Comparison ─────────────────────────────────────────────
 
 @app.route("/api/migrations/<mid>/compare", methods=["POST"])
 def api_live_comparison_post(mid: str):
