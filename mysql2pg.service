@@ -1,0 +1,19 @@
+[Unit]
+Description=MySQL2PG CDC Migration Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=mysql2pg
+Group=mysql2pg
+WorkingDirectory=/opt/mysql2pg
+ExecStart=/opt/mysql2pg/venv/bin/python3 main.py -c /opt/mysql2pg/config.yaml serve --port 8443 --cert-dir /opt/mysql2pg/certs
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mysql2pg
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

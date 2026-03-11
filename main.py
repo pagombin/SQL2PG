@@ -29,6 +29,7 @@ from mysql2pg.connectors import (
     ConnectorPlan,
 )
 from mysql2pg.testing import run_full_test, TestSuite, cleanup_mysql_test_data, cleanup_pg_test_data
+from mysql2pg.web import run_server
 
 console = Console()
 
@@ -513,6 +514,30 @@ def info(ctx: click.Context) -> None:
     pg = config.postgresql_target
     console.print(f"  PostgreSQL Target: [cyan]{pg.host}:{pg.port}/{pg.database}[/cyan]")
     console.print(f"  PostgreSQL User:   [cyan]{pg.username}[/cyan]")
+
+
+# ── Serve Command (Web UI + HTTPS) ───────────────────────────────────
+
+@cli.command()
+@click.option("--host", default="0.0.0.0", help="Bind address")
+@click.option("--port", default=8443, type=int, help="HTTPS port")
+@click.option("--cert-dir", default="/opt/mysql2pg/certs", help="Directory for TLS certificates")
+@click.option("--debug", is_flag=True, help="Enable Flask debug mode")
+@click.pass_context
+def serve(ctx: click.Context, host: str, port: int, cert_dir: str, debug: bool) -> None:
+    """Start the MySQL2PG web dashboard over HTTPS."""
+    config_path = ctx.obj["config_path"]
+    console.print(Panel("[bold]MySQL2PG Web Server[/bold]"))
+    console.print(f"  Config:  [cyan]{config_path}[/cyan]")
+    console.print(f"  Listen:  [cyan]https://{host}:{port}[/cyan]")
+    console.print(f"  Certs:   [cyan]{cert_dir}[/cyan]\n")
+    run_server(
+        config_path=config_path,
+        host=host,
+        port=port,
+        cert_dir=cert_dir,
+        debug=debug,
+    )
 
 
 if __name__ == "__main__":

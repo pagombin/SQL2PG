@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MySQL2PG &mdash; Migration Wizard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        :root { --bg: #0f172a; --card: #1e293b; --border: #334155; }
+        body { background: var(--bg); color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; }
+        .btn { transition: all 0.15s ease; cursor: pointer; }
+        .btn:hover { filter: brightness(1.15); }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
+        .step-active { background: #3b82f6; color: white; }
+        .step-done { background: #22c55e; color: white; }
+        .step-pending { background: #334155; color: #94a3b8; }
+        .fade-in { animation: fadeIn 0.2s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
+        .severity-block { color: #ef4444; }
+        .severity-warn { color: #eab308; }
+        .severity-info { color: #3b82f6; }
+        .sync-yes { color: #22c55e; }
+        .sync-no { color: #ef4444; }
+        .spinner { border: 2px solid #334155; border-top: 2px solid #3b82f6; border-radius: 50%; width: 18px; height: 18px; animation: spin 0.6s linear infinite; display: inline-block; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        input, select { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 0.5rem; padding: 0.5rem 0.75rem; }
+        input:focus, select:focus { outline: none; border-color: #3b82f6; }
+        .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 100; }
+    </style>
+</head>
+<body class="min-h-screen">
+
+<header class="border-b border-gray-700 px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+        <a href="/" class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-sm">M2P</a>
+        <div>
+            <h1 class="text-lg font-semibold">Migration Wizard</h1>
+            <p class="text-xs text-gray-400">Guided MySQL-to-PostgreSQL migration &middot; v{{ version }}</p>
+        </div>
+    </div>
+    <div class="flex items-center gap-3">
+        <span id="migration-id-badge" class="text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-400"></span>
+        <a href="/" class="btn text-xs px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600">Dashboard</a>
+    </div>
+</header>
+
+<!-- Step Indicators -->
+<div class="px-6 py-4 flex gap-1 overflow-x-auto" id="step-indicators">
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="0">1. Source</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="1">2. Databases</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="2">3. Target</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="3">4. Mappings</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="4">5. Compatibility</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="5">6. Kafka</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="6">7. Schema</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="7">8. Deploy</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="8">9. Monitor</div>
+</div>
+
+<main class="px-6 py-4 max-w-5xl mx-auto">
+
+<!-- Step 0: Connect to Source MySQL -->
+<section id="step-0" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Connect to Source MySQL</h2>
+    <p class="text-xs text-gray-400 mb-4">Enter the connection details for your MySQL cluster. The application will discover all databases, tables, and relationships.</p>
+    <div class="grid grid-cols-2 gap-4 mb-4">
+        <div><label class="text-xs text-gray-400 block mb-1">Host</label><input id="src-host" class="w-full" placeholder="mysql-host.db.ondigitalocean.com"></div>
+        <div><label class="text-xs text-gray-400 block mb-1">Port</label><input id="src-port" class="w-full" value="25060" type="number"></div>
+        <div><label class="text-xs text-gray-400 block mb-1">Username</label><input id="src-user" class="w-full" placeholder="doadmin"></div>
+        <div><label class="text-xs text-gray-400 block mb-1">Password</label><input id="src-pass" class="w-full" type="password"></div>
+    </div>
+    <button onclick="discoverSource()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium" id="btn-discover-src">Discover Source</button>
+    <span id="src-status" class="ml-3 text-xs text-gray-400"></span>
+</section>
+
+<!-- Step 1: Select Databases -->
+<section id="step-1" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Select Databases to Migrate</h2>
+    <p class="text-xs text-gray-400 mb-4">Choose which databases from the source cluster you want to migrate to PostgreSQL.</p>
+    <div id="db-list" class="space-y-2 mb-4"></div>
+    <div id="pk-warnings" class="mb-4"></div>
+    <button onclick="selectDatabases()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium" id="btn-select-dbs">Continue</button>
+</section>
+
+<!-- Step 2: Connect to Target PostgreSQL -->
+<section id="step-2" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Connect to Target PostgreSQL</h2>
+    <p class="text-xs text-gray-400 mb-4">Enter the connection details for your PostgreSQL target cluster.</p>
+    <div class="grid grid-cols-2 gap-4 mb-4">
+        <div><label class="text-xs text-gray-400 block mb-1">Host</label><input id="tgt-host" class="w-full" placeholder="pg-host.db.ondigitalocean.com"></div>
+        <div><label class="text-xs text-gray-400 block mb-1">Port</label><input id="tgt-port" class="w-full" value="25060" type="number"></div>
+        <div><label class="text-xs text-gray-400 block mb-1">Username</label><input id="tgt-user" class="w-full" placeholder="doadmin"></div>
+        <div><label class="text-xs text-gray-400 block mb-1">Password</label><input id="tgt-pass" class="w-full" type="password"></div>
+        <div><label class="text-xs text-gray-400 block mb-1">Database (for initial connection)</label><input id="tgt-db" class="w-full" value="defaultdb"></div>
+    </div>
+    <button onclick="discoverTarget()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium" id="btn-discover-tgt">Discover Target</button>
+    <span id="tgt-status" class="ml-3 text-xs text-gray-400"></span>
+</section>
+
+<!-- Step 3: Database Mappings -->
+<section id="step-3" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Database Mappings</h2>
+    <p class="text-xs text-gray-400 mb-4">Map each source MySQL database to a target PostgreSQL database. The target database will be used for schema and data.</p>
+    <div id="mapping-list" class="space-y-3 mb-4"></div>
+    <button onclick="setMappings()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium">Continue</button>
+</section>
+
+<!-- Step 4: Compatibility Analysis -->
+<section id="step-4" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Compatibility Analysis</h2>
+    <p class="text-xs text-gray-400 mb-4">Analyzing every column type for PostgreSQL compatibility.</p>
+    <div id="compat-results" class="mb-4"></div>
+    <button onclick="acknowledgeCompat()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium" id="btn-compat" disabled>Acknowledge &amp; Continue</button>
+</section>
+
+<!-- Step 5: Kafka Sizing -->
+<section id="step-5" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Kafka Cluster Validation</h2>
+    <p class="text-xs text-gray-400 mb-4">Checking whether your Kafka cluster can handle the migration workload.</p>
+    <div id="kafka-results" class="mb-4"></div>
+    <button onclick="acknowledgeKafka()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium" id="btn-kafka" disabled>Acknowledge &amp; Continue</button>
+</section>
+
+<!-- Step 6: Schema Creation -->
+<section id="step-6" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Schema Creation</h2>
+    <p class="text-xs text-gray-400 mb-4">Creating PostgreSQL tables, indexes, and types from the discovered MySQL schema. Foreign keys will be applied after data loading.</p>
+    <div id="schema-results" class="mb-4"></div>
+    <button onclick="createSchema()" class="btn px-4 py-2 rounded-lg bg-green-600 text-sm font-medium" id="btn-schema">Create Schema on Target</button>
+    <span id="schema-status" class="ml-3 text-xs text-gray-400"></span>
+</section>
+
+<!-- Step 7: Deploy Connectors -->
+<section id="step-7" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Deploy Connectors</h2>
+    <p class="text-xs text-gray-400 mb-4">Deploying Debezium source connector and JDBC sink connectors to start CDC replication.</p>
+    <div id="deploy-results" class="mb-4"></div>
+    <button onclick="deployConnectors()" class="btn px-4 py-2 rounded-lg bg-green-600 text-sm font-medium" id="btn-deploy">Deploy Connectors</button>
+    <span id="deploy-status" class="ml-3 text-xs text-gray-400"></span>
+</section>
+
+<!-- Step 8: Monitor / Live Comparison -->
+<section id="step-8" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Migration Monitor &amp; Live Data Comparison</h2>
+    <p class="text-xs text-gray-400 mb-4">Real-time comparison between source and target databases.</p>
+
+    <div class="grid grid-cols-4 gap-4 mb-4">
+        <div class="card p-4 text-center"><div class="text-xs text-gray-400 mb-1">Source Rows</div><div id="cmp-src-rows" class="text-xl font-bold">--</div></div>
+        <div class="card p-4 text-center"><div class="text-xs text-gray-400 mb-1">Target Rows</div><div id="cmp-tgt-rows" class="text-xl font-bold">--</div></div>
+        <div class="card p-4 text-center"><div class="text-xs text-gray-400 mb-1">Delta</div><div id="cmp-delta" class="text-xl font-bold">--</div></div>
+        <div class="card p-4 text-center"><div class="text-xs text-gray-400 mb-1">Sync %</div><div id="cmp-sync" class="text-xl font-bold">--</div></div>
+    </div>
+
+    <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold">Per-Table Comparison</h3>
+        <div class="flex gap-2">
+            <button onclick="refreshComparison()" class="btn text-xs px-3 py-1.5 rounded-lg bg-blue-600">Refresh</button>
+            <button onclick="toggleAutoRefresh()" class="btn text-xs px-3 py-1.5 rounded-lg bg-gray-700" id="btn-auto-refresh">Auto-Refresh: Off</button>
+        </div>
+    </div>
+    <div id="compare-table" class="overflow-hidden rounded-lg border border-gray-700 mb-4">
+        <div class="p-8 text-center text-gray-500 text-sm">Click Refresh to load comparison data.</div>
+    </div>
+
+    <div id="sample-data" class="mb-4"></div>
+
+    <div class="flex gap-3 mt-4">
+        <button onclick="applyConstraints()" class="btn px-4 py-2 rounded-lg bg-yellow-600 text-sm font-medium" id="btn-fk">Apply FK Constraints</button>
+        <button onclick="completeMigration()" class="btn px-4 py-2 rounded-lg bg-green-600 text-sm font-medium">Complete Migration</button>
+    </div>
+</section>
+
+<!-- Event Log (always visible) -->
+<div class="card p-4 mt-4" id="event-log-card">
+    <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold">Migration Events</h3>
+        <span id="phase-badge" class="text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-400"></span>
+    </div>
+    <div id="event-log" class="text-xs font-mono space-y-0.5 max-h-48 overflow-y-auto">
+        <div class="text-gray-500">No events yet.</div>
+    </div>
+</div>
+
+</main>
+
+<div id="toast-container" class="toast"></div>
+
+<script>
+let MID = null;
+let STATE = null;
+let currentStep = 0;
+let autoRefreshInterval = null;
+
+function toast(msg, type='info') {
+    const c = document.getElementById('toast-container');
+    const bg = {success:'bg-green-800 border-green-600', error:'bg-red-800 border-red-600', info:'bg-blue-800 border-blue-600', warn:'bg-yellow-800 border-yellow-600'};
+    const d = document.createElement('div');
+    d.className = `fade-in p-3 rounded-lg border text-sm mb-2 ${bg[type]||bg.info}`;
+    d.textContent = msg;
+    c.appendChild(d);
+    setTimeout(() => d.remove(), 5000);
+}
+
+async function api(path, opts={}) {
+    const resp = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    return data;
+}
+
+function showStep(n) {
+    for (let i = 0; i <= 8; i++) document.getElementById('step-'+i).classList.add('hidden');
+    document.getElementById('step-'+n).classList.remove('hidden');
+    currentStep = n;
+    document.querySelectorAll('.step-item').forEach(el => {
+        const s = parseInt(el.dataset.step);
+        el.className = 'step-item px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap ' +
+            (s < n ? 'step-done' : s === n ? 'step-active' : 'step-pending');
+    });
+}
+
+function renderEvents(events) {
+    const el = document.getElementById('event-log');
+    if (!events || !events.length) return;
+    const colors = {info:'text-blue-400', success:'text-green-400', error:'text-red-400', warn:'text-yellow-400'};
+    el.innerHTML = events.slice(-50).map(e => {
+        const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : '';
+        return `<div class="${colors[e.level]||'text-gray-400'}">[${ts}] ${e.message}</div>`;
+    }).join('');
+    el.scrollTop = el.scrollHeight;
+}
+
+function updateState(data) {
+    STATE = data;
+    document.getElementById('migration-id-badge').textContent = 'ID: ' + (data.migration_id || '');
+    document.getElementById('phase-badge').textContent = (data.phase || '').replace(/_/g, ' ');
+    renderEvents(data.events || []);
+}
+
+function fmtBytes(b) {
+    if (b > 1073741824) return (b/1073741824).toFixed(2)+' GB';
+    if (b > 1048576) return (b/1048576).toFixed(1)+' MB';
+    if (b > 1024) return (b/1024).toFixed(0)+' KB';
+    return b+' B';
+}
+
+function fmtNum(n) { return (n||0).toLocaleString(); }
+
+// ── Init ───────────────────────────────────────────────────────────
+async function init() {
+    try {
+        const data = await api('/api/migrations', {method:'POST'});
+        MID = data.migration_id;
+        const state = await api(`/api/migrations/${MID}`);
+        updateState(state);
+        showStep(0);
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+// ── Step 0: Discover Source ────────────────────────────────────────
+async function discoverSource() {
+    const btn = document.getElementById('btn-discover-src');
+    const status = document.getElementById('src-status');
+    btn.disabled = true;
+    status.innerHTML = '<span class="spinner"></span> Discovering...';
+    try {
+        const data = await api(`/api/migrations/${MID}/discover-source`, {
+            method: 'POST',
+            body: JSON.stringify({
+                host: document.getElementById('src-host').value,
+                port: document.getElementById('src-port').value,
+                username: document.getElementById('src-user').value,
+                password: document.getElementById('src-pass').value,
+            }),
+        });
+        updateState(data);
+        if (data.phase === 'failed') { status.textContent = 'Failed: ' + data.error_message; btn.disabled = false; return; }
+        status.textContent = 'Discovery complete!';
+        renderDatabaseList(data.source_cluster);
+        showStep(1);
+    } catch(e) { status.textContent = e.message; toast(e.message,'error'); btn.disabled = false; }
+}
+
+function renderDatabaseList(cluster) {
+    const el = document.getElementById('db-list');
+    const dbs = cluster.databases || [];
+    el.innerHTML = dbs.map(db => {
+        const pkWarn = (db.tables||[]).filter(t => !t.has_primary_key).length;
+        const warn = pkWarn ? `<span class="text-yellow-400 text-xs ml-2">${pkWarn} table(s) without PK</span>` : '';
+        return `<label class="flex items-center gap-3 p-3 rounded-lg bg-gray-800 hover:bg-gray-700 cursor-pointer">
+            <input type="checkbox" class="db-checkbox" value="${db.name}" checked>
+            <div class="flex-1">
+                <div class="text-sm font-medium">${db.name}${warn}</div>
+                <div class="text-xs text-gray-400">${db.table_count} tables &middot; ${fmtNum(db.total_rows)} rows &middot; ${fmtBytes(db.total_size)}</div>
+            </div>
+        </label>`;
+    }).join('');
+}
+
+async function selectDatabases() {
+    const checked = [...document.querySelectorAll('.db-checkbox:checked')].map(cb => cb.value);
+    if (!checked.length) { toast('Select at least one database','warn'); return; }
+    try {
+        const data = await api(`/api/migrations/${MID}/select-databases`, {
+            method: 'POST', body: JSON.stringify({databases: checked}),
+        });
+        updateState(data);
+        showStep(2);
+    } catch(e) { toast(e.message,'error'); }
+}
+
+// ── Step 2: Discover Target ───────────────────────────────────────
+async function discoverTarget() {
+    const btn = document.getElementById('btn-discover-tgt');
+    const status = document.getElementById('tgt-status');
+    btn.disabled = true;
+    status.innerHTML = '<span class="spinner"></span> Discovering...';
+    try {
+        const data = await api(`/api/migrations/${MID}/discover-target`, {
+            method: 'POST',
+            body: JSON.stringify({
+                host: document.getElementById('tgt-host').value,
+                port: document.getElementById('tgt-port').value,
+                username: document.getElementById('tgt-user').value,
+                password: document.getElementById('tgt-pass').value,
+                database: document.getElementById('tgt-db').value,
+            }),
+        });
+        updateState(data);
+        if (data.phase === 'failed') { status.textContent = 'Failed: ' + data.error_message; btn.disabled = false; return; }
+        status.textContent = 'Target discovered!';
+        renderMappings(data);
+        showStep(3);
+    } catch(e) { status.textContent = e.message; toast(e.message,'error'); btn.disabled = false; }
+}
+
+function renderMappings(data) {
+    const el = document.getElementById('mapping-list');
+    const selected = data.selected_databases || [];
+    const tgtDbs = (data.target_cluster.databases || []).map(d => d.name);
+    el.innerHTML = selected.map(db => {
+        const options = tgtDbs.map(t => `<option value="${t}" ${t===db?'selected':''}>${t}</option>`).join('');
+        return `<div class="flex items-center gap-3 p-3 rounded-lg bg-gray-800">
+            <span class="text-sm font-mono flex-1">${db}</span>
+            <span class="text-gray-500">&rarr;</span>
+            <select class="mapping-select flex-1" data-source="${db}">
+                ${options}
+                <option value="__create__">Create new: ${db}</option>
+            </select>
+        </div>`;
+    }).join('');
+}
+
+async function setMappings() {
+    const mappings = [...document.querySelectorAll('.mapping-select')].map(sel => {
+        const tgt = sel.value === '__create__' ? sel.dataset.source : sel.value;
+        return {source_db: sel.dataset.source, target_db: tgt, create_target: sel.value === '__create__'};
+    });
+    try {
+        let data = await api(`/api/migrations/${MID}/database-mappings`, {
+            method: 'POST', body: JSON.stringify({mappings}),
+        });
+        updateState(data);
+        // Auto-run compatibility
+        document.getElementById('compat-results').innerHTML = '<div class="spinner"></div> Analyzing...';
+        showStep(4);
+        data = await api(`/api/migrations/${MID}/analyze`, {method:'POST'});
+        updateState(data);
+        renderCompatibility(data.compatibility_report);
+    } catch(e) { toast(e.message,'error'); }
+}
+
+// ── Step 4: Compatibility ─────────────────────────────────────────
+function renderCompatibility(report) {
+    const el = document.getElementById('compat-results');
+    let html = '';
+
+    if (report.total_blockers > 0) {
+        html += `<div class="p-3 rounded-lg bg-red-900 bg-opacity-30 border border-red-700 mb-3">
+            <div class="text-sm font-semibold severity-block mb-1">${report.total_blockers} Blocking Issue(s)</div>
+            <div class="text-xs text-gray-300">These must be resolved before migration can proceed.</div>
+        </div>`;
+        html += '<div class="space-y-1 mb-3">';
+        report.blockers.forEach(b => {
+            html += `<div class="text-xs p-2 bg-gray-800 rounded"><span class="severity-block font-bold">BLOCK</span> <span class="text-gray-300">${b.database}.${b.table}.${b.column}</span> &mdash; ${b.message}</div>`;
+        });
+        html += '</div>';
+    }
+
+    if (report.total_warnings > 0) {
+        html += `<div class="p-3 rounded-lg bg-yellow-900 bg-opacity-30 border border-yellow-700 mb-3">
+            <div class="text-sm font-semibold severity-warn mb-1">${report.total_warnings} Warning(s)</div>
+            <div class="text-xs text-gray-300">Review these; behavior may differ on PostgreSQL.</div>
+        </div>`;
+        html += '<div class="space-y-1 mb-3 max-h-48 overflow-y-auto">';
+        report.warnings.forEach(w => {
+            html += `<div class="text-xs p-2 bg-gray-800 rounded"><span class="severity-warn font-bold">WARN</span> <span class="text-gray-300">${w.database}.${w.table}.${w.column}</span> <span class="text-gray-500">${w.mysql_type} &rarr; ${w.pg_type}</span> &mdash; ${w.message}</div>`;
+        });
+        html += '</div>';
+    }
+
+    html += `<div class="text-xs text-gray-400">${report.total_info} automatic mapping(s) handled.</div>`;
+
+    if (report.tables_without_pk && report.tables_without_pk.length) {
+        html += `<div class="mt-2 text-xs text-yellow-400">Tables without primary key: ${report.tables_without_pk.join(', ')}</div>`;
+    }
+
+    el.innerHTML = html;
+    document.getElementById('btn-compat').disabled = (report.total_blockers > 0);
+}
+
+async function acknowledgeCompat() {
+    document.getElementById('kafka-results').innerHTML = '<div class="spinner"></div> Validating Kafka...';
+    showStep(5);
+    try {
+        const data = await api(`/api/migrations/${MID}/validate-kafka`, {method:'POST'});
+        updateState(data);
+        renderKafka(data.sizing_report);
+    } catch(e) { toast(e.message,'error'); }
+}
+
+// ── Step 5: Kafka Sizing ──────────────────────────────────────────
+function renderKafka(report) {
+    let html = `<div class="grid grid-cols-3 gap-3 mb-3">
+        <div class="card p-3 text-center"><div class="text-xs text-gray-400">Topics</div><div class="text-lg font-bold">${report.topics_needed}</div></div>
+        <div class="card p-3 text-center"><div class="text-xs text-gray-400">Data Size</div><div class="text-lg font-bold">${report.estimated_data_gb} GB</div></div>
+        <div class="card p-3 text-center"><div class="text-xs text-gray-400">Est. Duration</div><div class="text-lg font-bold">${report.estimated_duration_hours}h</div></div>
+    </div>`;
+    html += `<div class="text-xs text-gray-400 mb-2">Cluster: ${report.cluster_plan} (${report.cluster_nodes} nodes, ${report.cluster_cpu_per_node} vCPU/node, ${report.cluster_storage_gb} GB storage)</div>`;
+    const statusColor = report.adequate ? 'text-green-400' : 'text-yellow-400';
+    html += `<div class="text-sm font-semibold ${statusColor} mb-2">${report.adequate ? 'Cluster is adequate' : 'Cluster may be undersized'}</div>`;
+    report.recommendations.forEach(r => {
+        html += `<div class="text-xs text-gray-300 mb-1">&bull; ${r}</div>`;
+    });
+    document.getElementById('kafka-results').innerHTML = html;
+    document.getElementById('btn-kafka').disabled = false;
+}
+
+function acknowledgeKafka() { showStep(6); }
+
+// ── Step 6: Create Schema ─────────────────────────────────────────
+async function createSchema() {
+    const btn = document.getElementById('btn-schema');
+    const status = document.getElementById('schema-status');
+    btn.disabled = true;
+    status.innerHTML = '<span class="spinner"></span> Creating schema...';
+    try {
+        const data = await api(`/api/migrations/${MID}/create-schema`, {
+            method: 'POST',
+            body: JSON.stringify({pg_password: document.getElementById('tgt-pass').value}),
+        });
+        updateState(data);
+        if (data.phase === 'failed') { status.textContent = 'Failed'; btn.disabled = false; return; }
+        status.textContent = 'Schema created!';
+        document.getElementById('schema-results').innerHTML = `<div class="text-sm text-green-400">Schema creation complete. ${(data.ddl_statements||[]).length} DDL statements generated.</div>`;
+        showStep(7);
+    } catch(e) { status.textContent = e.message; btn.disabled = false; toast(e.message,'error'); }
+}
+
+// ── Step 7: Deploy Connectors ─────────────────────────────────────
+async function deployConnectors() {
+    const btn = document.getElementById('btn-deploy');
+    const status = document.getElementById('deploy-status');
+    btn.disabled = true;
+    status.innerHTML = '<span class="spinner"></span> Deploying...';
+    try {
+        const data = await api(`/api/migrations/${MID}/deploy-connectors`, {
+            method: 'POST',
+            body: JSON.stringify({
+                mysql_password: document.getElementById('src-pass').value,
+                pg_password: document.getElementById('tgt-pass').value,
+            }),
+        });
+        updateState(data);
+        if (data.phase === 'failed') { status.textContent = 'Failed'; btn.disabled = false; return; }
+        status.textContent = 'Connectors deployed!';
+        document.getElementById('deploy-results').innerHTML = `<div class="text-sm text-green-400">${(data.connector_configs||[]).length} connector(s) deployed. CDC replication starting.</div>`;
+        showStep(8);
+    } catch(e) { status.textContent = e.message; btn.disabled = false; toast(e.message,'error'); }
+}
+
+// ── Step 8: Monitor & Live Comparison ─────────────────────────────
+async function refreshComparison() {
+    try {
+        const data = await api(`/api/migrations/${MID}/compare`, {
+            method: 'POST',
+            body: JSON.stringify({
+                mysql_password: document.getElementById('src-pass').value,
+                pg_password: document.getElementById('tgt-pass').value,
+                include_samples: true,
+            }),
+        });
+        renderComparison(data);
+    } catch(e) { toast(e.message,'error'); }
+}
+
+function renderComparison(data) {
+    document.getElementById('cmp-src-rows').textContent = fmtNum(data.total_source_rows);
+    document.getElementById('cmp-tgt-rows').textContent = fmtNum(data.total_target_rows);
+    document.getElementById('cmp-delta').textContent = fmtNum(data.total_delta);
+    document.getElementById('cmp-delta').className = 'text-xl font-bold ' + (data.total_delta === 0 ? 'sync-yes' : 'sync-no');
+    document.getElementById('cmp-sync').textContent = data.sync_percentage + '%';
+    document.getElementById('cmp-sync').className = 'text-xl font-bold ' + (data.sync_percentage >= 100 ? 'sync-yes' : 'sync-no');
+
+    let html = '<table class="w-full text-xs"><thead class="text-gray-400 uppercase bg-gray-800"><tr>' +
+        '<th class="px-3 py-2 text-left">Database</th><th class="px-3 py-2 text-left">Table</th>' +
+        '<th class="px-3 py-2 text-right">Source Rows</th><th class="px-3 py-2 text-right">Target Rows</th>' +
+        '<th class="px-3 py-2 text-right">Delta</th><th class="px-3 py-2 text-center">Sync</th>' +
+        '</tr></thead><tbody>';
+
+    (data.databases || []).forEach(db => {
+        (db.tables || []).forEach(t => {
+            const syncClass = t.in_sync ? 'sync-yes' : 'sync-no';
+            const syncIcon = t.in_sync ? '&#10003;' : '&#10007;';
+            html += `<tr class="border-t border-gray-700">
+                <td class="px-3 py-2 text-gray-400">${db.database}</td>
+                <td class="px-3 py-2 font-mono">${t.table}</td>
+                <td class="px-3 py-2 text-right">${fmtNum(t.source_rows)}</td>
+                <td class="px-3 py-2 text-right">${fmtNum(t.target_rows)}</td>
+                <td class="px-3 py-2 text-right ${syncClass}">${t.delta >= 0 ? fmtNum(t.delta) : '--'}</td>
+                <td class="px-3 py-2 text-center ${syncClass}">${syncIcon}</td>
+            </tr>`;
+        });
+    });
+    html += '</tbody></table>';
+    document.getElementById('compare-table').innerHTML = html;
+
+    // Sample data
+    if (data.samples && data.samples.length) {
+        let shtml = '<h3 class="text-sm font-semibold mb-2">Sample Data Comparison</h3>';
+        data.samples.forEach(s => {
+            shtml += `<div class="mb-3 card p-3">
+                <div class="text-xs text-gray-400 mb-2">${s.database}.${s.table} &mdash; ${s.matches} match(es), ${s.mismatches} mismatch(es)</div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div><div class="text-xs text-blue-400 mb-1">Source (MySQL)</div><div class="text-xs font-mono bg-gray-900 p-2 rounded max-h-32 overflow-auto">${JSON.stringify(s.source_rows?.slice(0,3), null, 1)}</div></div>
+                    <div><div class="text-xs text-green-400 mb-1">Target (PostgreSQL)</div><div class="text-xs font-mono bg-gray-900 p-2 rounded max-h-32 overflow-auto">${JSON.stringify(s.target_rows?.slice(0,3), null, 1)}</div></div>
+                </div>
+            </div>`;
+        });
+        document.getElementById('sample-data').innerHTML = shtml;
+    }
+}
+
+function toggleAutoRefresh() {
+    const btn = document.getElementById('btn-auto-refresh');
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+        autoRefreshInterval = null;
+        btn.textContent = 'Auto-Refresh: Off';
+        btn.className = 'btn text-xs px-3 py-1.5 rounded-lg bg-gray-700';
+    } else {
+        refreshComparison();
+        autoRefreshInterval = setInterval(refreshComparison, 10000);
+        btn.textContent = 'Auto-Refresh: On (10s)';
+        btn.className = 'btn text-xs px-3 py-1.5 rounded-lg bg-green-700';
+    }
+}
+
+async function applyConstraints() {
+    const btn = document.getElementById('btn-fk');
+    btn.disabled = true;
+    try {
+        const data = await api(`/api/migrations/${MID}/apply-constraints`, {
+            method: 'POST',
+            body: JSON.stringify({pg_password: document.getElementById('tgt-pass').value}),
+        });
+        updateState(data);
+        toast('FK constraints applied', 'success');
+        btn.disabled = false;
+    } catch(e) { toast(e.message,'error'); btn.disabled = false; }
+}
+
+async function completeMigration() {
+    if (!confirm('Mark this migration as complete? Connectors will remain running for ongoing CDC.')) return;
+    try {
+        const data = await api(`/api/migrations/${MID}/complete`, {method:'POST'});
+        updateState(data);
+        toast('Migration completed!', 'success');
+    } catch(e) { toast(e.message,'error'); }
+}
+
+init();
+</script>
+</body>
+</html>

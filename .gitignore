@@ -15,6 +15,12 @@ env/
 # Config with secrets
 config.yaml
 
+# TLS certificates
+certs/
+*.crt
+*.key
+*.pem
+
 # IDE
 .idea/
 .vscode/
