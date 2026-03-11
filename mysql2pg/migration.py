@@ -29,7 +29,7 @@ from .models import (
     MigrationPhase,
     MigrationState,
 )
-from .schema import execute_ddl, execute_fk_constraints, generate_full_ddl
+from .schema import ensure_database_exists, execute_ddl, execute_fk_constraints, generate_full_ddl
 from .sizing import sizing_report_to_dict, validate_kafka_capacity
 from .verification import live_comparison, verify_row_counts
 
@@ -266,7 +266,14 @@ def step_validate_kafka(
 
 
 def step_create_schema(state: MigrationState) -> MigrationState:
-    """Generate and execute PostgreSQL DDL for the migration."""
+    """Generate and execute PostgreSQL DDL for the migration.
+
+    This step:
+    1. Creates target databases if they don't exist (via the admin connection)
+    2. Generates DDL (ENUM types, tables, indexes, triggers) from discovered schema
+    3. Executes DDL against each target database
+    4. FK constraints are saved but NOT applied yet (deferred to post-data-load)
+    """
     state.phase = MigrationPhase.CREATING_SCHEMA
     state.add_event("info", "Creating PostgreSQL schema")
     save_state(state)
@@ -275,16 +282,18 @@ def step_create_schema(state: MigrationState) -> MigrationState:
         cluster = rebuild_cluster_from_summary(state.source_cluster)
         has_postgis = state.target_cluster.get("has_postgis", False)
 
-        # Rebuild compatibility report
         report = analyze_compatibility(cluster, state.selected_databases, has_postgis)
 
         all_ddl: list[str] = []
         all_results: list[dict] = []
 
-        # Use database mappings to determine target DB per source DB
         mappings = state.database_mappings
         if not mappings:
             mappings = [{"source_db": db, "target_db": db} for db in state.selected_databases]
+
+        # The admin database is the one the user connected with during target
+        # discovery (e.g. "defaultdb").  We use it to CREATE DATABASE.
+        admin_db = state.pg_database or "defaultdb"
 
         for mapping in mappings:
             src_db = mapping["source_db"]
@@ -293,6 +302,24 @@ def step_create_schema(state: MigrationState) -> MigrationState:
             if not db_obj:
                 continue
 
+            # ── Ensure the target database exists ─────────────────────
+            db_result = ensure_database_exists(
+                state.pg_host, state.pg_port,
+                state.pg_username, state.pg_password,
+                admin_db, tgt_db,
+            )
+            if db_result["status"] == "created":
+                state.add_event("success", f"Created PostgreSQL database: {tgt_db}")
+            elif db_result["status"] == "exists":
+                state.add_event("info", f"PostgreSQL database already exists: {tgt_db}")
+            else:
+                state.add_event("error", f"Failed to create database {tgt_db}: {db_result.get('error', 'unknown')}")
+                state.phase = MigrationPhase.FAILED
+                state.error_message = f"Cannot create database {tgt_db}: {db_result.get('error', '')}"
+                save_state(state)
+                return state
+
+            # ── Generate DDL ──────────────────────────────────────────
             ddl = generate_full_ddl(
                 db_obj, report,
                 has_postgis=has_postgis,
@@ -301,11 +328,10 @@ def step_create_schema(state: MigrationState) -> MigrationState:
             )
             all_ddl.extend(ddl)
 
-            # Execute DDL (skip CREATE DATABASE and FK constraints)
+            # Execute DDL (skip FK constraints — those are applied after data load)
             schema_ddl = [
                 s for s in ddl
                 if not s.strip().startswith("ALTER TABLE")
-                and not s.strip().startswith("CREATE DATABASE")
                 and not s.strip().startswith("-- Foreign key")
             ]
 
@@ -315,26 +341,30 @@ def step_create_schema(state: MigrationState) -> MigrationState:
                 tgt_db, schema_ddl,
             )
             all_results.extend(results)
-            state.add_event("info", f"Schema for {src_db} -> {tgt_db}: {len(results)} statements executed")
+
+            ok_count = sum(1 for r in results if r.get("status") == "ok")
+            err_count = sum(1 for r in results if r.get("status") == "error")
+            state.add_event("info", f"Schema for {src_db} -> {tgt_db}: {ok_count} OK, {err_count} errors")
 
         state.ddl_statements = all_ddl
         errors = [r for r in all_results if r.get("status") == "error"]
         if errors:
-            state.add_event("warn", f"{len(errors)} DDL error(s) encountered (may be pre-existing objects)")
+            for e in errors[:5]:
+                state.add_event("warn", f"DDL: {e.get('statement', '')[:80]} -- {e.get('error', '')[:80]}")
+            if len(errors) > 5:
+                state.add_event("warn", f"... and {len(errors) - 5} more DDL error(s)")
 
         state.phase = MigrationPhase.SCHEMA_CREATED
         state.add_event("success", "Schema creation complete")
+
+        total_tables = sum(
+            len(db.tables)
+            for db in cluster.databases
+            if db.name in state.selected_databases
+        )
         state.progress = {
-            "tables_total": sum(
-                len([t for t in db.tables])
-                for db in cluster.databases
-                if db.name in state.selected_databases
-            ),
-            "tables_schema_created": sum(
-                len([t for t in db.tables])
-                for db in cluster.databases
-                if db.name in state.selected_databases
-            ),
+            "tables_total": total_tables,
+            "tables_schema_created": total_tables,
         }
 
     except Exception as e:

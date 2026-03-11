@@ -274,6 +274,50 @@ def generate_full_ddl(
     return ddl
 
 
+def ensure_database_exists(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    admin_database: str,
+    target_database: str,
+) -> dict:
+    """Create a PostgreSQL database if it does not already exist.
+
+    Connects to ``admin_database`` (e.g. ``defaultdb``) and issues
+    CREATE DATABASE for ``target_database``.  Returns a status dict.
+    """
+    import psycopg2
+
+    conn = psycopg2.connect(
+        host=host, port=port, user=username, password=password,
+        dbname=admin_database, sslmode="require",
+    )
+    conn.autocommit = True
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT 1 FROM pg_database WHERE datname = %s",
+        (target_database,),
+    )
+    exists = cursor.fetchone() is not None
+
+    if exists:
+        cursor.close()
+        conn.close()
+        return {"database": target_database, "status": "exists"}
+
+    try:
+        cursor.execute(f'CREATE DATABASE "{target_database}"')
+        result = {"database": target_database, "status": "created"}
+    except psycopg2.Error as e:
+        result = {"database": target_database, "status": "error", "error": str(e).strip()}
+
+    cursor.close()
+    conn.close()
+    return result
+
+
 def execute_ddl(
     host: str,
     port: int,
