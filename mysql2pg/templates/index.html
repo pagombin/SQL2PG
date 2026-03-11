@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MySQL2PG &mdash; CDC Migration Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        :root { --bg: #0f172a; --card: #1e293b; --border: #334155; --accent: #3b82f6; }
+        body { background: var(--bg); color: #e2e8f0; font-family: 'Inter', system-ui, sans-serif; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; }
+        .btn { transition: all 0.15s ease; }
+        .btn:hover { filter: brightness(1.15); }
+        .btn:active { transform: scale(0.97); }
+        .state-running { color: #22c55e; }
+        .state-paused { color: #eab308; }
+        .state-failed { color: #ef4444; }
+        .state-unassigned { color: #f59e0b; }
+        .state-unknown { color: #94a3b8; }
+        .spinner { border: 2px solid #334155; border-top: 2px solid #3b82f6; border-radius: 50%; width: 16px; height: 16px; animation: spin 0.6s linear infinite; display: inline-block; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 100; max-width: 28rem; }
+        .fade-in { animation: fadeIn 0.2s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .tab-active { border-bottom: 2px solid #3b82f6; color: #3b82f6; }
+        .tab-inactive { border-bottom: 2px solid transparent; color: #94a3b8; }
+        .tab-inactive:hover { color: #cbd5e1; }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <!-- Header -->
+    <header class="border-b border-gray-700 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-sm">M2P</div>
+            <div>
+                <h1 class="text-lg font-semibold">MySQL2PG</h1>
+                <p class="text-xs text-gray-400">CDC Migration Dashboard &middot; v{{ version }}</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-3">
+            <span id="connection-badge" class="text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-400">Checking...</span>
+            <button onclick="reloadConfig()" class="btn text-xs px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600">Reload Config</button>
+        </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="px-6 pt-4 flex gap-6 text-sm font-medium">
+        <button class="tab-active pb-2 cursor-pointer" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+        <button class="tab-inactive pb-2 cursor-pointer" data-tab="connectors" onclick="switchTab('connectors')">Connectors</button>
+        <button class="tab-inactive pb-2 cursor-pointer" data-tab="plan" onclick="switchTab('plan')">Plan</button>
+        <button class="tab-inactive pb-2 cursor-pointer" data-tab="config" onclick="switchTab('config')">Configuration</button>
+    </nav>
+
+    <main class="px-6 py-6 max-w-7xl mx-auto">
+
+        <!-- Dashboard Tab -->
+        <section id="tab-dashboard">
+            <!-- Quick Actions -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <button onclick="runSetup()" class="btn card p-4 text-left hover:border-blue-500">
+                    <div class="text-blue-400 text-sm font-medium mb-1">Setup</div>
+                    <p class="text-xs text-gray-400">Enable Kafka Connect &amp; auto-create topics</p>
+                </button>
+                <button onclick="runDeploy()" class="btn card p-4 text-left hover:border-green-500">
+                    <div class="text-green-400 text-sm font-medium mb-1">Deploy</div>
+                    <p class="text-xs text-gray-400">Deploy all source &amp; sink connectors</p>
+                </button>
+                <button onclick="runVerify()" class="btn card p-4 text-left hover:border-yellow-500">
+                    <div class="text-yellow-400 text-sm font-medium mb-1">Verify</div>
+                    <p class="text-xs text-gray-400">Check Kafka cluster readiness</p>
+                </button>
+                <button onclick="confirmTeardown()" class="btn card p-4 text-left hover:border-red-500">
+                    <div class="text-red-400 text-sm font-medium mb-1">Teardown</div>
+                    <p class="text-xs text-gray-400">Delete all deployed connectors</p>
+                </button>
+            </div>
+
+            <!-- Status Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div class="card p-5">
+                    <div class="text-xs text-gray-400 uppercase tracking-wider mb-2">Connectors</div>
+                    <div id="stat-connectors" class="text-2xl font-bold">--</div>
+                    <div id="stat-connectors-detail" class="text-xs text-gray-400 mt-1">Loading...</div>
+                </div>
+                <div class="card p-5">
+                    <div class="text-xs text-gray-400 uppercase tracking-wider mb-2">Sources</div>
+                    <div id="stat-sources" class="text-2xl font-bold">--</div>
+                    <div id="stat-sources-detail" class="text-xs text-gray-400 mt-1">Loading...</div>
+                </div>
+                <div class="card p-5">
+                    <div class="text-xs text-gray-400 uppercase tracking-wider mb-2">Cluster Health</div>
+                    <div id="stat-health" class="text-2xl font-bold">--</div>
+                    <div id="stat-health-detail" class="text-xs text-gray-400 mt-1">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Verify Results -->
+            <div id="verify-panel" class="card p-5 mb-6 hidden">
+                <h3 class="text-sm font-semibold mb-3">Cluster Verification</h3>
+                <div id="verify-results"></div>
+            </div>
+
+            <!-- Activity Log -->
+            <div class="card p-5">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold">Activity Log</h3>
+                    <button onclick="clearLog()" class="text-xs text-gray-500 hover:text-gray-300">Clear</button>
+                </div>
+                <div id="activity-log" class="text-xs font-mono space-y-1 max-h-64 overflow-y-auto">
+                    <div class="text-gray-500">Ready.</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Connectors Tab -->
+        <section id="tab-connectors" class="hidden">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-base font-semibold">Deployed Connectors</h2>
+                <button onclick="fetchStatus()" class="btn text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700">Refresh</button>
+            </div>
+            <div id="connectors-table" class="card overflow-hidden">
+                <div class="p-8 text-center text-gray-500 text-sm">Loading connector status...</div>
+            </div>
+        </section>
+
+        <!-- Plan Tab -->
+        <section id="tab-plan" class="hidden">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-base font-semibold">Connector Deployment Plan</h2>
+                <div class="flex gap-2">
+                    <button onclick="runDeploy('source')" class="btn text-xs px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600">Deploy Sources Only</button>
+                    <button onclick="runDeploy('sink')" class="btn text-xs px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600">Deploy Sinks Only</button>
+                    <button onclick="runDeploy()" class="btn text-xs px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700">Deploy All</button>
+                </div>
+            </div>
+            <div id="plan-table" class="card overflow-hidden">
+                <div class="p-8 text-center text-gray-500 text-sm">Loading plan...</div>
+            </div>
+        </section>
+
+        <!-- Config Tab -->
+        <section id="tab-config" class="hidden">
+            <h2 class="text-base font-semibold mb-4">Configuration Summary</h2>
+            <div id="config-panel" class="space-y-4">
+                <div class="p-8 text-center text-gray-500 text-sm">Loading configuration...</div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast"></div>
+
+    <!-- Teardown Confirmation Modal -->
+    <div id="teardown-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
+        <div class="card p-6 max-w-md w-full mx-4 fade-in">
+            <h3 class="text-lg font-semibold text-red-400 mb-2">Confirm Teardown</h3>
+            <p class="text-sm text-gray-400 mb-4">This will delete all connectors defined in the configuration. This action cannot be undone.</p>
+            <div class="flex gap-3 justify-end">
+                <button onclick="closeTeardownModal()" class="btn text-sm px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600">Cancel</button>
+                <button onclick="runTeardown()" class="btn text-sm px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700">Delete All Connectors</button>
+            </div>
+        </div>
+    </div>
+
+<script>
+const API = '';
+
+function switchTab(name) {
+    document.querySelectorAll('[id^="tab-"]').forEach(el => el.classList.add('hidden'));
+    document.getElementById('tab-' + name).classList.remove('hidden');
+    document.querySelectorAll('[data-tab]').forEach(btn => {
+        btn.className = btn.dataset.tab === name ? 'tab-active pb-2 cursor-pointer' : 'tab-inactive pb-2 cursor-pointer';
+    });
+    if (name === 'connectors') fetchStatus();
+    if (name === 'plan') fetchPlan();
+    if (name === 'config') fetchConfig();
+}
+
+function log(msg, type = 'info') {
+    const el = document.getElementById('activity-log');
+    const ts = new Date().toLocaleTimeString();
+    const colors = { info: 'text-blue-400', success: 'text-green-400', error: 'text-red-400', warn: 'text-yellow-400' };
+    el.innerHTML += `<div class="${colors[type] || 'text-gray-400'}">[${ts}] ${msg}</div>`;
+    el.scrollTop = el.scrollHeight;
+}
+
+function clearLog() {
+    document.getElementById('activity-log').innerHTML = '<div class="text-gray-500">Log cleared.</div>';
+}
+
+function toast(msg, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const bg = { success: 'bg-green-800 border-green-600', error: 'bg-red-800 border-red-600', info: 'bg-blue-800 border-blue-600', warn: 'bg-yellow-800 border-yellow-600' };
+    const div = document.createElement('div');
+    div.className = `fade-in p-3 rounded-lg border text-sm mb-2 ${bg[type] || bg.info}`;
+    div.textContent = msg;
+    container.appendChild(div);
+    setTimeout(() => div.remove(), 5000);
+}
+
+async function api(path, opts = {}) {
+    try {
+        const resp = await fetch(API + path, {
+            headers: { 'Content-Type': 'application/json' },
+            ...opts,
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        return data;
+    } catch (e) {
+        log(e.message, 'error');
+        toast(e.message, 'error');
+        throw e;
+    }
+}
+
+async function checkHealth() {
+    try {
+        const data = await api('/api/health');
+        const badge = document.getElementById('connection-badge');
+        badge.textContent = 'Connected';
+        badge.className = 'text-xs px-2 py-1 rounded-full bg-green-900 text-green-400';
+    } catch {
+        const badge = document.getElementById('connection-badge');
+        badge.textContent = 'Error';
+        badge.className = 'text-xs px-2 py-1 rounded-full bg-red-900 text-red-400';
+    }
+}
+
+async function fetchStatus() {
+    try {
+        const data = await api('/api/status');
+        const connectors = data.connectors || [];
+
+        const running = connectors.filter(c => c.state === 'RUNNING').length;
+        const total = connectors.length;
+
+        document.getElementById('stat-connectors').textContent = total;
+        document.getElementById('stat-connectors-detail').textContent = `${running} running`;
+
+        if (connectors.length === 0) {
+            document.getElementById('connectors-table').innerHTML =
+                '<div class="p-8 text-center text-gray-500 text-sm">No connectors deployed.</div>';
+            return;
+        }
+
+        let html = '<table class="w-full text-sm"><thead class="text-xs text-gray-400 uppercase bg-gray-800"><tr>' +
+            '<th class="px-4 py-3 text-left">Name</th><th class="px-4 py-3 text-left">State</th>' +
+            '<th class="px-4 py-3 text-left">Type</th><th class="px-4 py-3 text-left">Tasks</th>' +
+            '<th class="px-4 py-3 text-right">Actions</th></tr></thead><tbody>';
+
+        connectors.forEach(c => {
+            const stateClass = 'state-' + c.state.toLowerCase();
+            const tasks = c.tasks.map(t => t.state).join(', ') || 'none';
+            html += `<tr class="border-t border-gray-700">
+                <td class="px-4 py-3 font-mono text-xs">${c.name}</td>
+                <td class="px-4 py-3 font-semibold ${stateClass}">${c.state}</td>
+                <td class="px-4 py-3 text-gray-400">${c.type}</td>
+                <td class="px-4 py-3 text-gray-400 text-xs">${tasks}</td>
+                <td class="px-4 py-3 text-right">
+                    <button onclick="connectorAction('${c.name}','pause')" class="text-xs text-yellow-400 hover:text-yellow-300 mr-2">Pause</button>
+                    <button onclick="connectorAction('${c.name}','resume')" class="text-xs text-green-400 hover:text-green-300 mr-2">Resume</button>
+                    <button onclick="connectorAction('${c.name}','restart')" class="text-xs text-blue-400 hover:text-blue-300">Restart</button>
+                </td></tr>`;
+        });
+
+        html += '</tbody></table>';
+        document.getElementById('connectors-table').innerHTML = html;
+    } catch {}
+}
+
+async function fetchPlan() {
+    try {
+        const data = await api('/api/plan');
+        const connectors = data.connectors || [];
+
+        let html = '<table class="w-full text-sm"><thead class="text-xs text-gray-400 uppercase bg-gray-800"><tr>' +
+            '<th class="px-4 py-3 text-left">Name</th><th class="px-4 py-3 text-left">Type</th>' +
+            '<th class="px-4 py-3 text-left">Source</th><th class="px-4 py-3 text-left">Database(s)</th>' +
+            '</tr></thead><tbody>';
+
+        connectors.forEach(c => {
+            const typeColor = c.connector_type === 'source' ? 'text-purple-400' : 'text-cyan-400';
+            html += `<tr class="border-t border-gray-700">
+                <td class="px-4 py-3 font-mono text-xs">${c.name}</td>
+                <td class="px-4 py-3 ${typeColor}">${c.connector_type}</td>
+                <td class="px-4 py-3 text-gray-300">${c.source_name}</td>
+                <td class="px-4 py-3 text-gray-400">${c.database_name}</td></tr>`;
+        });
+
+        html += '</tbody></table>';
+        html += `<div class="px-4 py-3 text-xs text-gray-500 border-t border-gray-700">${data.source_count} source + ${data.sink_count} sink connectors</div>`;
+        document.getElementById('plan-table').innerHTML = html;
+    } catch {}
+}
+
+async function fetchConfig() {
+    try {
+        const data = await api('/api/info');
+        let html = '';
+
+        html += `<div class="card p-5">
+            <h3 class="text-sm font-semibold mb-3 text-blue-400">Aiven / Kafka</h3>
+            <div class="grid grid-cols-2 gap-2 text-xs">
+                <div class="text-gray-400">Project</div><div class="font-mono">${data.aiven_project}</div>
+                <div class="text-gray-400">Kafka Service</div><div class="font-mono">${data.kafka_service}</div>
+                <div class="text-gray-400">Kafka SSL</div><div class="font-mono">${data.kafka_ssl}</div>
+                <div class="text-gray-400">Table Strategy</div><div class="font-mono">${data.table_name_strategy}</div>
+            </div>
+        </div>`;
+
+        data.mysql_sources.forEach(src => {
+            const dbs = src.databases.map(d => {
+                const tables = d.tables.length ? d.tables.join(', ') : 'all tables';
+                return `<span class="text-gray-300">${d.name}</span> <span class="text-gray-500">(${tables})</span>`;
+            }).join('<br>');
+
+            html += `<div class="card p-5">
+                <h3 class="text-sm font-semibold mb-3 text-green-400">MySQL: ${src.name}</h3>
+                <div class="grid grid-cols-2 gap-2 text-xs">
+                    <div class="text-gray-400">Host</div><div class="font-mono">${src.host}:${src.port}</div>
+                    <div class="text-gray-400">Server ID</div><div class="font-mono">${src.server_id}</div>
+                    <div class="text-gray-400">Databases</div><div>${dbs}</div>
+                </div>
+            </div>`;
+        });
+
+        const pg = data.postgresql_target;
+        html += `<div class="card p-5">
+            <h3 class="text-sm font-semibold mb-3 text-cyan-400">PostgreSQL Target</h3>
+            <div class="grid grid-cols-2 gap-2 text-xs">
+                <div class="text-gray-400">Host</div><div class="font-mono">${pg.host}:${pg.port}</div>
+                <div class="text-gray-400">Database</div><div class="font-mono">${pg.database}</div>
+                <div class="text-gray-400">Username</div><div class="font-mono">${pg.username}</div>
+            </div>
+        </div>`;
+
+        document.getElementById('config-panel').innerHTML = html;
+    } catch {}
+}
+
+async function fetchInfo() {
+    try {
+        const data = await api('/api/info');
+        document.getElementById('stat-sources').textContent = data.mysql_sources.length;
+        const totalDbs = data.mysql_sources.reduce((sum, s) => sum + s.databases.length, 0);
+        document.getElementById('stat-sources-detail').textContent = `${totalDbs} database(s)`;
+    } catch {}
+}
+
+async function runSetup() {
+    log('Running setup...', 'info');
+    try {
+        const data = await api('/api/setup', { method: 'POST' });
+        log('Setup complete: ' + data.steps.map(s => s.step).join(', '), 'success');
+        toast('Setup complete', 'success');
+        fetchStatus();
+    } catch {}
+}
+
+async function runDeploy(type) {
+    const label = type ? `${type} connectors` : 'all connectors';
+    log(`Deploying ${label}...`, 'info');
+    try {
+        const body = type ? { type } : {};
+        const data = await api('/api/deploy', { method: 'POST', body: JSON.stringify(body) });
+        log(`Deploy done: ${data.deployed_count} deployed, ${data.failed_count} failed`, data.failed_count > 0 ? 'warn' : 'success');
+        toast(`Deployed ${data.deployed_count} connector(s)`, data.failed_count > 0 ? 'warn' : 'success');
+        fetchStatus();
+    } catch {}
+}
+
+async function runVerify() {
+    log('Running cluster verification...', 'info');
+    try {
+        const data = await api('/api/verify');
+        const panel = document.getElementById('verify-panel');
+        panel.classList.remove('hidden');
+
+        let html = '';
+        for (const [key, val] of Object.entries(data.checks)) {
+            const icon = val ? '&#10003;' : '&#10007;';
+            const color = val ? 'text-green-400' : 'text-red-400';
+            html += `<div class="flex items-center gap-2 text-sm mb-1"><span class="${color}">${icon}</span><span class="text-gray-300">${key}: ${val ? 'enabled' : 'disabled'}</span></div>`;
+        }
+        if (data.kafka_connect_uri) {
+            html += `<div class="text-xs text-gray-500 mt-2 font-mono">Connect URI: ${data.kafka_connect_uri}</div>`;
+        }
+
+        document.getElementById('verify-results').innerHTML = html;
+        document.getElementById('stat-health').textContent = data.all_ok ? 'OK' : 'Issues';
+        document.getElementById('stat-health').className = 'text-2xl font-bold ' + (data.all_ok ? 'text-green-400' : 'text-yellow-400');
+        document.getElementById('stat-health-detail').textContent = data.all_ok ? 'All checks passed' : 'Some checks failed';
+
+        log('Verification complete: ' + (data.all_ok ? 'all OK' : 'issues found'), data.all_ok ? 'success' : 'warn');
+        toast(data.all_ok ? 'Cluster verified OK' : 'Issues found', data.all_ok ? 'success' : 'warn');
+    } catch {}
+}
+
+function confirmTeardown() {
+    document.getElementById('teardown-modal').classList.remove('hidden');
+}
+
+function closeTeardownModal() {
+    document.getElementById('teardown-modal').classList.add('hidden');
+}
+
+async function runTeardown() {
+    closeTeardownModal();
+    log('Running teardown...', 'warn');
+    try {
+        const data = await api('/api/teardown', { method: 'POST', body: JSON.stringify({}) });
+        log(`Teardown done: ${data.deleted_count} deleted, ${data.failed_count} failed`, data.failed_count > 0 ? 'warn' : 'success');
+        toast(`Deleted ${data.deleted_count} connector(s)`, 'success');
+        fetchStatus();
+    } catch {}
+}
+
+async function connectorAction(name, action) {
+    log(`${action} connector: ${name}`, 'info');
+    try {
+        await api(`/api/connector/${name}/${action}`, { method: 'POST' });
+        log(`Connector ${name}: ${action} OK`, 'success');
+        toast(`${name}: ${action} done`, 'success');
+        setTimeout(fetchStatus, 1000);
+    } catch {}
+}
+
+async function reloadConfig() {
+    try {
+        await api('/api/config/reload', { method: 'POST' });
+        log('Configuration reloaded', 'success');
+        toast('Configuration reloaded', 'success');
+        fetchInfo();
+    } catch {}
+}
+
+// Initial load
+checkHealth();
+fetchStatus();
+fetchInfo();
+setInterval(checkHealth, 30000);
+</script>
+</body>
+</html>
