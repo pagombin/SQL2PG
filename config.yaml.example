@@ -1,0 +1,61 @@
+# MySQL2PG Configuration
+# Copy this file to config.yaml and fill in your values.
+
+aiven:
+  # Aiven API bearer token (retrieve from Atlantis or Aiven console)
+  token: "your-aiven-api-token"
+  # Aiven project name (e.g., do-user-xxxxxxx-0)
+  project: "do-user-xxxxxxx-0"
+
+kafka:
+  # Kafka cluster service name as shown in DigitalOcean/Aiven
+  service_name: "db-kafka-nyc3-93111"
+  # SSL hostname and port from the Kafka cluster Overview -> Connection Details -> SSL tab.
+  # IMPORTANT: Use the SSL connection details, NOT SASL.
+  ssl_host: "kafka-ssl-hostname"
+  ssl_port: 25062
+
+# Multiple MySQL source databases.
+# Each source represents a distinct MySQL instance that can contain one or more databases.
+mysql_sources:
+  - name: "mysql-source-1"
+    host: "mysql-host-1.db.ondigitalocean.com"
+    port: 25060
+    username: "doadmin"
+    password: "your-mysql-password"
+    # server_id must be unique across all sources (used by Debezium binlog reader)
+    server_id: 1001
+    databases:
+      - name: "inventory"
+        # List specific tables to replicate. Omit or leave empty to replicate ALL tables.
+        tables:
+          - "customers"
+          - "orders"
+
+  - name: "mysql-source-2"
+    host: "mysql-host-2.db.ondigitalocean.com"
+    port: 25060
+    username: "doadmin"
+    password: "your-mysql-password"
+    server_id: 2001
+    databases:
+      - name: "analytics"
+        tables:
+          - "events"
+          - "metrics"
+
+# Single PostgreSQL target.
+postgresql_target:
+  host: "pg-host.db.ondigitalocean.com"
+  port: 25060
+  username: "doadmin"
+  password: "your-pg-password"
+  # Target database name. Must exist already (defaultdb is created by default).
+  database: "defaultdb"
+
+# How to name tables in PostgreSQL when replicating from multiple sources.
+# Options:
+#   "as_is"    - Use original MySQL table name (default). Risk of collision if
+#                multiple sources have tables with the same name.
+#   "prefixed" - Prefix with database name: inventory_customers, analytics_events
+table_name_strategy: "as_is"
