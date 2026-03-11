@@ -340,14 +340,19 @@ function renderMappings(data) {
     const selected = data.selected_databases || [];
     const tgtDbs = (data.target_cluster.databases || []).map(d => d.name);
     el.innerHTML = selected.map(db => {
-        const options = tgtDbs.map(t => `<option value="${t}" ${t===db?'selected':''}>${t}</option>`).join('');
+        const exactMatch = tgtDbs.includes(db);
+        const createSelected = !exactMatch;
+        const options = tgtDbs.map(t =>
+            `<option value="${t}" ${exactMatch && t===db ? 'selected' : ''}>${t}</option>`
+        ).join('');
         return `<div class="flex items-center gap-3 p-3 rounded-lg bg-gray-800">
             <span class="text-sm font-mono flex-1">${db}</span>
             <span class="text-gray-500">&rarr;</span>
             <select class="mapping-select flex-1" data-source="${db}">
+                <option value="__create__" ${createSelected ? 'selected' : ''}>Create new database: ${db}</option>
                 ${options}
-                <option value="__create__">Create new: ${db}</option>
             </select>
+            ${createSelected ? '<span class="text-xs text-green-400">new</span>' : ''}
         </div>`;
     }).join('');
 }
