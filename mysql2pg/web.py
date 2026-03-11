@@ -358,6 +358,329 @@ def reload_config():
         return jsonify({"error": str(e)}), 500
 
 
+# ══════════════════════════════════════════════════════════════════════
+# Migration Wizard API
+# ══════════════════════════════════════════════════════════════════════
+
+from .migration import (
+    create_migration,
+    delete_migration,
+    get_live_comparison,
+    list_migrations,
+    load_state,
+    save_state,
+    step_analyze_compatibility,
+    step_apply_constraints,
+    step_complete,
+    step_create_schema,
+    step_deploy_connectors,
+    step_discover_source,
+    step_discover_target,
+    step_select_databases,
+    step_set_database_mappings,
+    step_start_streaming,
+    step_validate_kafka,
+    step_verify,
+)
+
+
+@app.route("/migrate")
+def migrate_wizard():
+    return render_template("migrate.html", version=__version__)
+
+
+# ── Migrations CRUD ──────────────────────────────────────────────────
+
+@app.route("/api/migrations")
+def api_list_migrations():
+    return jsonify({"migrations": list_migrations()})
+
+
+@app.route("/api/migrations", methods=["POST"])
+def api_create_migration():
+    state = create_migration()
+    return jsonify({"migration_id": state.migration_id, "phase": state.phase.value})
+
+
+@app.route("/api/migrations/<mid>")
+def api_get_migration(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+    return jsonify(state.to_dict())
+
+
+@app.route("/api/migrations/<mid>", methods=["DELETE"])
+def api_delete_migration(mid: str):
+    if delete_migration(mid):
+        return jsonify({"message": "Deleted"})
+    return jsonify({"error": "Not found"}), 404
+
+
+# ── Step: Discover Source ────────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/discover-source", methods=["POST"])
+def api_discover_source(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    for field in ("host", "port", "username", "password"):
+        if field not in body:
+            return jsonify({"error": f"Missing field: {field}"}), 400
+
+    try:
+        state = step_discover_source(
+            state,
+            host=body["host"],
+            port=int(body["port"]),
+            username=body["username"],
+            password=body["password"],
+        )
+        return jsonify(state.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Step: Select Databases ───────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/select-databases", methods=["POST"])
+def api_select_databases(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    databases = body.get("databases", [])
+    if not databases:
+        return jsonify({"error": "No databases selected"}), 400
+
+    designated_keys = body.get("designated_keys", {})
+    state = step_select_databases(state, databases, designated_keys)
+    return jsonify(state.to_dict())
+
+
+# ── Step: Discover Target ────────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/discover-target", methods=["POST"])
+def api_discover_target(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    for field in ("host", "port", "username", "password"):
+        if field not in body:
+            return jsonify({"error": f"Missing field: {field}"}), 400
+
+    try:
+        state = step_discover_target(
+            state,
+            host=body["host"],
+            port=int(body["port"]),
+            username=body["username"],
+            password=body["password"],
+            database=body.get("database", "defaultdb"),
+        )
+        return jsonify(state.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Step: Set Database Mappings ──────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/database-mappings", methods=["POST"])
+def api_set_mappings(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    mappings = body.get("mappings", [])
+    if not mappings:
+        return jsonify({"error": "No mappings provided"}), 400
+
+    state = step_set_database_mappings(state, mappings)
+    return jsonify(state.to_dict())
+
+
+# ── Step: Analyze Compatibility ──────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/analyze", methods=["POST"])
+def api_analyze_compatibility(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    try:
+        state = step_analyze_compatibility(state)
+        return jsonify(state.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Step: Validate Kafka ─────────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/validate-kafka", methods=["POST"])
+def api_validate_kafka(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    try:
+        config = _get_config()
+        state = step_validate_kafka(state, config)
+        return jsonify(state.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Step: Create Schema ─────────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/create-schema", methods=["POST"])
+def api_create_schema(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    # Re-inject password since it's not persisted
+    if body.get("pg_password"):
+        state.pg_password = body["pg_password"]
+
+    try:
+        state = step_create_schema(state)
+        return jsonify(state.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Step: Deploy Connectors ─────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/deploy-connectors", methods=["POST"])
+def api_deploy_connectors(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    if body.get("mysql_password"):
+        state.mysql_password = body["mysql_password"]
+    if body.get("pg_password"):
+        state.pg_password = body["pg_password"]
+
+    try:
+        config = _get_config()
+        state = step_deploy_connectors(state, config)
+        return jsonify(state.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Step: Apply Constraints ─────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/apply-constraints", methods=["POST"])
+def api_apply_constraints(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    if body.get("pg_password"):
+        state.pg_password = body["pg_password"]
+
+    try:
+        state = step_apply_constraints(state)
+        return jsonify(state.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Step: Verify ─────────────────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/verify", methods=["POST"])
+def api_verify_migration(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    if body.get("mysql_password"):
+        state.mysql_password = body["mysql_password"]
+    if body.get("pg_password"):
+        state.pg_password = body["pg_password"]
+
+    try:
+        state = step_verify(state)
+        return jsonify(state.to_dict())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Step: Streaming / Complete ───────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/start-streaming", methods=["POST"])
+def api_start_streaming(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+    state = step_start_streaming(state)
+    return jsonify(state.to_dict())
+
+
+@app.route("/api/migrations/<mid>/complete", methods=["POST"])
+def api_complete_migration(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+    state = step_complete(state)
+    return jsonify(state.to_dict())
+
+
+# ── Live Data Comparison ─────────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/compare")
+def api_live_comparison(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    # Passwords must be supplied as query params for GET requests
+    mysql_password = request.args.get("mysql_password", state.mysql_password)
+    pg_password = request.args.get("pg_password", state.pg_password)
+    include_samples = request.args.get("samples", "false").lower() == "true"
+
+    state.mysql_password = mysql_password
+    state.pg_password = pg_password
+
+    try:
+        result = get_live_comparison(state, include_samples=include_samples)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/migrations/<mid>/compare", methods=["POST"])
+def api_live_comparison_post(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    if body.get("mysql_password"):
+        state.mysql_password = body["mysql_password"]
+    if body.get("pg_password"):
+        state.pg_password = body["pg_password"]
+    include_samples = body.get("include_samples", False)
+
+    try:
+        result = get_live_comparison(state, include_samples=include_samples)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Server Entry Point ───────────────────────────────────────────────
 
 def create_app(config_path: str = "config.yaml") -> Flask:

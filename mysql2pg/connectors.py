@@ -220,3 +220,154 @@ def get_sink_connector_names(config: AppConfig) -> list[str]:
         plan.name for plan in build_all_connectors(config)
         if plan.connector_type == "sink"
     ]
+
+
+# ── Discovery-Driven Connector Builders ──────────────────────────────
+
+def build_discovered_connectors(
+    cluster,
+    selected_databases: list[str],
+    database_mappings: list[dict],
+    designated_keys: dict[str, list[str]],
+    mysql_host: str,
+    mysql_port: int,
+    mysql_user: str,
+    mysql_password: str,
+    pg_host: str,
+    pg_port: int,
+    pg_user: str,
+    pg_password: str,
+    kafka_ssl_host: str,
+    kafka_ssl_port: int,
+    server_id: int = 1001,
+    snapshot_mode: str = "initial",
+) -> list[dict]:
+    """Build connector configs from discovered schema data.
+
+    Unlike build_all_connectors (config-driven), this uses actual discovery
+    data to set per-table pk.fields and message.key.columns dynamically.
+    """
+    configs: list[dict] = []
+    sanitized_host = _sanitize_name(mysql_host.split(".")[0])
+    topic_prefix = f"mysql_cdc_{sanitized_host}"
+    bootstrap_servers = f"{kafka_ssl_host}:{kafka_ssl_port}"
+
+    # Collect all table names per database from the cluster discovery
+    db_tables: dict[str, list] = {}
+    for db in cluster.databases:
+        if db.name not in selected_databases:
+            continue
+        db_tables[db.name] = db.tables
+
+    # Source connector: one per MySQL cluster covering all selected databases
+    db_list = ",".join(selected_databases)
+
+    # Build message.key.columns for tables without PKs
+    key_col_entries: list[str] = []
+    for key_path, cols in designated_keys.items():
+        if cols:
+            key_col_entries.append(f"{key_path}:{','.join(cols)}")
+
+    source_config: dict = {
+        "name": f"debezium-source-{sanitized_host}",
+        "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+        "database.hostname": mysql_host,
+        "database.port": str(mysql_port),
+        "database.user": mysql_user,
+        "database.password": mysql_password,
+        "database.server.id": str(server_id),
+        "database.server.name": f"mysql_{sanitized_host}",
+        "topic.prefix": topic_prefix,
+        "database.include.list": db_list,
+        "include.schema.changes": "true",
+        "snapshot.mode": snapshot_mode,
+        "schema.history.internal.kafka.bootstrap.servers": bootstrap_servers,
+        "schema.history.internal.kafka.topic": f"schema-history.{sanitized_host}",
+        "schema.history.internal.consumer.security.protocol": "SSL",
+        "schema.history.internal.producer.security.protocol": "SSL",
+        "schema.history.internal.consumer.ssl.endpoint.identification.algorithm": "",
+        "schema.history.internal.producer.ssl.endpoint.identification.algorithm": "",
+        "schema.history.internal.consumer.ssl.keystore.location": "/run/aiven/keys/public.keystore.p12",
+        "schema.history.internal.consumer.ssl.keystore.password": "password",
+        "schema.history.internal.consumer.ssl.keystore.type": "PKCS12",
+        "schema.history.internal.consumer.ssl.key.password": "password",
+        "schema.history.internal.producer.ssl.keystore.location": "/run/aiven/keys/public.keystore.p12",
+        "schema.history.internal.producer.ssl.keystore.password": "password",
+        "schema.history.internal.producer.ssl.keystore.type": "PKCS12",
+        "schema.history.internal.producer.ssl.key.password": "password",
+        "schema.history.internal.consumer.ssl.truststore.location": "/run/aiven/keys/public.truststore.jks",
+        "schema.history.internal.consumer.ssl.truststore.password": "password",
+        "schema.history.internal.producer.ssl.truststore.location": "/run/aiven/keys/public.truststore.jks",
+        "schema.history.internal.producer.ssl.truststore.password": "password",
+        "transforms": "unwrap",
+        "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+        "transforms.unwrap.drop.tombstones": "false",
+        "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "key.converter.schemas.enable": "true",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter.schemas.enable": "true",
+    }
+
+    if key_col_entries:
+        source_config["message.key.columns"] = ";".join(key_col_entries)
+
+    configs.append(source_config)
+
+    # Sink connectors: one per database mapping
+    for mapping in database_mappings:
+        src_db = mapping["source_db"]
+        tgt_db = mapping["target_db"]
+
+        tables = db_tables.get(src_db, [])
+        if not tables:
+            continue
+
+        # Determine pk.fields from discovered PKs (use first table's PK as default)
+        # For tables with different PKs, the JDBC sink uses record_key mode
+        pk_fields_set: set[str] = set()
+        for t in tables:
+            if t.primary_key_columns:
+                for col in t.primary_key_columns:
+                    pk_fields_set.add(col)
+            elif t.designated_key_columns:
+                for col in t.designated_key_columns:
+                    pk_fields_set.add(col)
+
+        # Build topic list from discovered tables
+        topics = ",".join(
+            f"{topic_prefix}.{src_db}.{t.name}" for t in tables
+        )
+
+        connection_url = f"jdbc:postgresql://{pg_host}:{pg_port}/{tgt_db}?sslmode=require"
+
+        sink_config: dict = {
+            "name": f"jdbc-sink-{_sanitize_name(src_db)}-to-{_sanitize_name(tgt_db)}",
+            "connector.class": "io.aiven.connect.jdbc.JdbcSinkConnector",
+            "connection.url": connection_url,
+            "connection.user": pg_user,
+            "connection.password": pg_password,
+            "topics": topics,
+            "auto.create": "false",
+            "auto.evolve": "true",
+            "insert.mode": "upsert",
+            "delete.enabled": "true",
+            "pk.mode": "record_key",
+            "pk.fields": ",".join(sorted(pk_fields_set)) if pk_fields_set else "id",
+            "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+            "key.converter.schemas.enable": "true",
+            "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+            "value.converter.schemas.enable": "true",
+            "transforms": "unwrap,route",
+            "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+            "transforms.unwrap.drop.tombstones": "false",
+            "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
+            "transforms.route.regex": "[^.]+\\.[^.]+\\.(.*)",
+            "transforms.route.replacement": "$1",
+            "errors.tolerance": "all",
+            "errors.deadletterqueue.topic.name": f"dlq-{_sanitize_name(src_db)}",
+            "errors.deadletterqueue.context.headers.enable": "true",
+        }
+
+        configs.append(sink_config)
+
+    return configs

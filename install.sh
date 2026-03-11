@@ -98,7 +98,15 @@ download_files() {
         "mysql2pg/testing.py"
         "mysql2pg/web.py"
         "mysql2pg/certs.py"
+        "mysql2pg/models.py"
+        "mysql2pg/discovery.py"
+        "mysql2pg/compatibility.py"
+        "mysql2pg/schema.py"
+        "mysql2pg/sizing.py"
+        "mysql2pg/migration.py"
+        "mysql2pg/verification.py"
         "mysql2pg/templates/index.html"
+        "mysql2pg/templates/migrate.html"
         "mysql2pg.service"
     )
 
