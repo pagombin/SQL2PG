@@ -31,6 +31,7 @@ from .models import (
     MigrationState,
 )
 from .schema import ensure_database_exists, execute_ddl, execute_fk_constraints, generate_full_ddl
+from .verification import verify_schema_match
 from .sizing import sizing_report_to_dict, validate_kafka_capacity
 from .verification import live_comparison, verify_row_counts
 
@@ -378,23 +379,56 @@ def step_create_schema(state: MigrationState) -> MigrationState:
 
         state.ddl_statements = all_ddl
         errors = [r for r in all_results if r.get("status") == "error"]
+        non_exists_errors = [
+            e for e in errors
+            if "already exists" not in (e.get("error", "")).lower()
+        ]
         if errors:
             for e in errors[:5]:
                 state.add_event("warn", f"DDL: {e.get('statement', '')[:80]} -- {e.get('error', '')[:80]}")
             if len(errors) > 5:
                 state.add_event("warn", f"... and {len(errors) - 5} more DDL error(s)")
 
-        state.phase = MigrationPhase.SCHEMA_CREATED
-        state.add_event("success", "Schema creation complete")
-
+        # Validate: check that every expected table actually exists on PG
         total_tables = sum(
             len(db.tables)
             for db in cluster.databases
             if db.name in state.selected_databases
         )
+        missing_tables: list[str] = []
+        for mapping in mappings:
+            src_db = mapping["source_db"]
+            tgt_db = mapping["target_db"]
+            db_obj = next((d for d in cluster.databases if d.name == src_db), None)
+            if not db_obj:
+                continue
+            expected = [t.name for t in db_obj.tables]
+            results = verify_schema_match(
+                state.pg_host, state.pg_port,
+                state.pg_username, state.pg_password,
+                tgt_db, expected,
+            )
+            for r in results:
+                if r.get("status") == "missing":
+                    missing_tables.append(f"{tgt_db}.{r['table']}")
+
+        if missing_tables:
+            state.add_event("error", f"Schema validation: {len(missing_tables)} table(s) missing on target: {', '.join(missing_tables[:10])}")
+            if non_exists_errors:
+                state.phase = MigrationPhase.FAILED
+                state.error_message = f"{len(missing_tables)} table(s) missing after schema creation"
+                save_state(state)
+                return state
+
+        state.phase = MigrationPhase.SCHEMA_CREATED
+        if missing_tables:
+            state.add_event("warn", "Schema created with missing tables. Review DDL errors above before deploying connectors.")
+        else:
+            state.add_event("success", f"Schema creation complete. All {total_tables} table(s) verified on target.")
+
         state.progress = {
             "tables_total": total_tables,
-            "tables_schema_created": total_tables,
+            "tables_schema_created": total_tables - len(missing_tables),
         }
 
     except Exception as e:
@@ -592,6 +626,76 @@ def step_complete(state: MigrationState) -> MigrationState:
     state.add_event("success", "Migration completed successfully")
     save_state(state)
     return state
+
+
+# ── Schema Evolution ─────────────────────────────────────────────────
+
+def check_schema_drift(state: MigrationState) -> dict:
+    """Compare current MySQL schema against PG target to find drift.
+
+    Returns a dict with added/removed columns per table and any
+    new tables not yet on the target.
+    """
+    from .discovery import discover_mysql_cluster
+
+    cluster = discover_mysql_cluster(
+        state.mysql_host, state.mysql_port,
+        state.mysql_username, state.mysql_password,
+        database_filter=state.selected_databases,
+    )
+
+    mappings = _get_effective_mappings(state)
+    drift: list[dict] = []
+
+    for mapping in mappings:
+        src_db = mapping["source_db"]
+        tgt_db = mapping["target_db"]
+        db_obj = next((d for d in cluster.databases if d.name == src_db), None)
+        if not db_obj:
+            continue
+
+        # Get current PG tables and columns
+        from .discovery import discover_pg_tables
+        pg_tables = discover_pg_tables(
+            state.pg_host, state.pg_port,
+            state.pg_username, state.pg_password,
+            tgt_db,
+        )
+        pg_table_map = {t.name: {c.name for c in t.columns} for t in pg_tables}
+
+        for table in db_obj.tables:
+            pg_cols = pg_table_map.get(table.name)
+            if pg_cols is None:
+                drift.append({
+                    "database": src_db,
+                    "target_database": tgt_db,
+                    "table": table.name,
+                    "type": "new_table",
+                    "message": f"Table '{table.name}' exists in MySQL but not in PostgreSQL",
+                    "columns": [c.name for c in table.columns],
+                })
+                continue
+
+            mysql_cols = {c.name for c in table.columns}
+            added = mysql_cols - pg_cols
+            removed = pg_cols - mysql_cols
+
+            if added or removed:
+                drift.append({
+                    "database": src_db,
+                    "target_database": tgt_db,
+                    "table": table.name,
+                    "type": "column_drift",
+                    "added_columns": sorted(added),
+                    "removed_columns": sorted(removed),
+                    "message": f"{len(added)} new, {len(removed)} removed column(s)",
+                })
+
+    return {
+        "has_drift": len(drift) > 0,
+        "drift_count": len(drift),
+        "drift": drift,
+    }
 
 
 # ── Live Status ──────────────────────────────────────────────────────
