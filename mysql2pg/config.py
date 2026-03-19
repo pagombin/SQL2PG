@@ -20,8 +20,8 @@ class AivenConfig:
 @dataclass
 class KafkaConfig:
     service_name: str
-    ssl_host: str
-    ssl_port: int
+    ssl_host: str = ""
+    ssl_port: int = 0
 
 
 @dataclass
@@ -109,10 +109,11 @@ def load_config(path: str | Path) -> AppConfig:
         project=_resolve_value(raw["aiven"]["project"]),
     )
 
+    kafka_raw = raw["kafka"]
     kafka = KafkaConfig(
-        service_name=raw["kafka"]["service_name"],
-        ssl_host=_resolve_value(raw["kafka"]["ssl_host"]),
-        ssl_port=int(raw["kafka"]["ssl_port"]),
+        service_name=kafka_raw["service_name"],
+        ssl_host=_resolve_value(kafka_raw["ssl_host"]) if "ssl_host" in kafka_raw else "",
+        ssl_port=int(kafka_raw["ssl_port"]) if "ssl_port" in kafka_raw else 0,
     )
 
     mysql_sources = [_parse_mysql_source(src) for src in raw["mysql_sources"]]
@@ -155,9 +156,8 @@ def _validate_raw_config(raw: dict) -> None:
         if key not in raw["aiven"]:
             raise ValueError(f"Missing required aiven config: '{key}'")
 
-    for key in ["service_name", "ssl_host", "ssl_port"]:
-        if key not in raw["kafka"]:
-            raise ValueError(f"Missing required kafka config: '{key}'")
+    if "service_name" not in raw["kafka"]:
+        raise ValueError("Missing required kafka config: 'service_name'")
 
     for key in ["host", "username", "password"]:
         if key not in raw["postgresql_target"]:

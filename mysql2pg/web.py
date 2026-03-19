@@ -47,6 +47,15 @@ def _get_client() -> AivenClient:
     return AivenClient(config.aiven.token, config.aiven.project)
 
 
+def _resolve_ssl(config: AppConfig, client: AivenClient | None = None) -> tuple[str, int]:
+    """Return Kafka SSL host/port, resolving from the Aiven API if needed."""
+    if config.kafka.ssl_host and config.kafka.ssl_port:
+        return config.kafka.ssl_host, config.kafka.ssl_port
+    if client is None:
+        client = _get_client()
+    return client.get_kafka_ssl_endpoint(config.kafka.service_name)
+
+
 def _plan_to_dict(plan: ConnectorPlan) -> dict:
     return {
         "name": plan.name,
@@ -88,7 +97,7 @@ def info():
         return jsonify({
             "aiven_project": config.aiven.project,
             "kafka_service": config.kafka.service_name,
-            "kafka_ssl": f"{config.kafka.ssl_host}:{config.kafka.ssl_port}",
+            "kafka_ssl": f"{config.kafka.ssl_host}:{config.kafka.ssl_port}" if config.kafka.ssl_host else "auto-resolved from API",
             "table_name_strategy": config.table_name_strategy,
             "mysql_sources": sources,
             "postgresql_target": {
@@ -108,7 +117,8 @@ def info():
 def plan():
     try:
         config = _get_config()
-        plans = build_all_connectors(config)
+        ssl_host, ssl_port = _resolve_ssl(config)
+        plans = build_all_connectors(config, ssl_host, ssl_port)
         return jsonify({
             "connectors": [_plan_to_dict(p) for p in plans],
             "source_count": sum(1 for p in plans if p.connector_type == "source"),
@@ -193,7 +203,8 @@ def deploy():
         body = request.get_json(silent=True) or {}
         filter_type = body.get("type")
 
-        all_plans = build_all_connectors(config)
+        ssl_host, ssl_port = _resolve_ssl(config, client)
+        all_plans = build_all_connectors(config, ssl_host, ssl_port)
         if filter_type == "source":
             plans = [p for p in all_plans if p.connector_type == "source"]
         elif filter_type == "sink":
@@ -242,7 +253,8 @@ def teardown():
             result = client.list_connectors(kafka_svc)
             names = [c.get("name") for c in result.get("connectors", []) if c.get("name")]
         else:
-            names = get_all_connector_names(config)
+            ssl_host, ssl_port = _resolve_ssl(config, client)
+            names = get_all_connector_names(config, ssl_host, ssl_port)
 
         deleted = []
         failed = []

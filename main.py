@@ -47,6 +47,17 @@ def _client(config: AppConfig) -> AivenClient:
     return AivenClient(config.aiven.token, config.aiven.project)
 
 
+def _resolve_ssl(config: AppConfig, client: AivenClient | None = None) -> tuple[str, int]:
+    """Return Kafka SSL host/port, resolving from the Aiven API if needed."""
+    if config.kafka.ssl_host and config.kafka.ssl_port:
+        return config.kafka.ssl_host, config.kafka.ssl_port
+    if client is None:
+        client = _client(config)
+    host, port = client.get_kafka_ssl_endpoint(config.kafka.service_name)
+    console.print(f"  Kafka SSL endpoint (auto-resolved): [cyan]{host}:{port}[/cyan]")
+    return host, port
+
+
 def _print_connector_table(plans: list[ConnectorPlan]) -> None:
     table = Table(title="Connector Plan")
     table.add_column("Name", style="cyan")
@@ -115,7 +126,8 @@ def setup(ctx: click.Context) -> None:
 def plan(ctx: click.Context) -> None:
     """Show the connector deployment plan without making any changes."""
     config = _load(ctx.obj["config_path"])
-    plans = build_all_connectors(config)
+    ssl_host, ssl_port = _resolve_ssl(config)
+    plans = build_all_connectors(config, ssl_host, ssl_port)
 
     console.print(Panel("[bold]Connector Deployment Plan[/bold]"))
     _print_connector_table(plans)
@@ -139,7 +151,8 @@ def deploy(ctx: click.Context, sources_only: bool, sinks_only: bool, wait: bool,
     client = _client(config)
     kafka_svc = config.kafka.service_name
 
-    all_plans = build_all_connectors(config)
+    ssl_host, ssl_port = _resolve_ssl(config, client)
+    all_plans = build_all_connectors(config, ssl_host, ssl_port)
     if sources_only:
         plans = [p for p in all_plans if p.connector_type == "source"]
     elif sinks_only:
@@ -298,7 +311,8 @@ def teardown(ctx: click.Context, delete_all: bool, yes: bool) -> None:
             console.print(f"[red]Failed to list connectors: {e}[/red]")
             sys.exit(1)
     else:
-        names = get_all_connector_names(config)
+        ssl_host, ssl_port = _resolve_ssl(config, client)
+        names = get_all_connector_names(config, ssl_host, ssl_port)
 
     if not names:
         console.print("[yellow]No connectors to delete.[/yellow]")

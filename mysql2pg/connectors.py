@@ -180,16 +180,29 @@ def build_sink_connectors_for_source(
     return plans
 
 
-def build_all_connectors(config: AppConfig) -> list[ConnectorPlan]:
-    """Build the full set of source + sink connector plans from config."""
+def build_all_connectors(
+    config: AppConfig,
+    kafka_ssl_host: str | None = None,
+    kafka_ssl_port: int | None = None,
+) -> list[ConnectorPlan]:
+    """Build the full set of source + sink connector plans from config.
+
+    If *kafka_ssl_host*/*kafka_ssl_port* are supplied they take precedence
+    over the values in ``config.kafka``.  This allows callers that resolved
+    the endpoint via the Aiven API to pass it in directly.
+    """
+    ssl_host = kafka_ssl_host or config.kafka.ssl_host
+    ssl_port = kafka_ssl_port or config.kafka.ssl_port
+    if not ssl_host or not ssl_port:
+        raise ValueError(
+            "Kafka SSL endpoint is not configured. Either set ssl_host/ssl_port "
+            "in config.yaml or resolve via the Aiven API before calling build_all_connectors."
+        )
+
     plans: list[ConnectorPlan] = []
 
     for source in config.mysql_sources:
-        source_plan = build_source_connector(
-            source,
-            config.kafka.ssl_host,
-            config.kafka.ssl_port,
-        )
+        source_plan = build_source_connector(source, ssl_host, ssl_port)
         plans.append(source_plan)
 
         sink_plans = build_sink_connectors_for_source(
@@ -202,9 +215,13 @@ def build_all_connectors(config: AppConfig) -> list[ConnectorPlan]:
     return plans
 
 
-def get_all_connector_names(config: AppConfig) -> list[str]:
+def get_all_connector_names(
+    config: AppConfig,
+    kafka_ssl_host: str | None = None,
+    kafka_ssl_port: int | None = None,
+) -> list[str]:
     """Get all expected connector names from config."""
-    return [plan.name for plan in build_all_connectors(config)]
+    return [plan.name for plan in build_all_connectors(config, kafka_ssl_host, kafka_ssl_port)]
 
 
 def get_source_connector_names(config: AppConfig) -> list[str]:
