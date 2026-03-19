@@ -202,6 +202,11 @@ function toast(msg, type='info') {
     setTimeout(() => d.remove(), 5000);
 }
 
+function esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 async function api(path, opts={}) {
     const resp = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
     const data = await resp.json();
@@ -226,7 +231,7 @@ function renderEvents(events) {
     const colors = {info:'text-blue-400', success:'text-green-400', error:'text-red-400', warn:'text-yellow-400'};
     el.innerHTML = events.slice(-50).map(e => {
         const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString() : '';
-        return `<div class="${colors[e.level]||'text-gray-400'}">[${ts}] ${e.message}</div>`;
+        return `<div class="${colors[e.level]||'text-gray-400'}">[${esc(ts)}] ${esc(e.message)}</div>`;
     }).join('');
     el.scrollTop = el.scrollHeight;
 }
@@ -289,9 +294,9 @@ function renderDatabaseList(cluster) {
         const pkWarn = (db.tables||[]).filter(t => !t.has_primary_key).length;
         const warn = pkWarn ? `<span class="text-yellow-400 text-xs ml-2">${pkWarn} table(s) without PK</span>` : '';
         return `<label class="flex items-center gap-3 p-3 rounded-lg bg-gray-800 hover:bg-gray-700 cursor-pointer">
-            <input type="checkbox" class="db-checkbox" value="${db.name}" checked>
+            <input type="checkbox" class="db-checkbox" value="${esc(db.name)}" checked>
             <div class="flex-1">
-                <div class="text-sm font-medium">${db.name}${warn}</div>
+                <div class="text-sm font-medium">${esc(db.name)}${warn}</div>
                 <div class="text-xs text-gray-400">${db.table_count} tables &middot; ${fmtNum(db.total_rows)} rows &middot; ${fmtBytes(db.total_size)}</div>
             </div>
         </label>`;
@@ -343,13 +348,13 @@ function renderMappings(data) {
         const exactMatch = tgtDbs.includes(db);
         const createSelected = !exactMatch;
         const options = tgtDbs.map(t =>
-            `<option value="${t}" ${exactMatch && t===db ? 'selected' : ''}>${t}</option>`
+            `<option value="${esc(t)}" ${exactMatch && t===db ? 'selected' : ''}>${esc(t)}</option>`
         ).join('');
         return `<div class="flex items-center gap-3 p-3 rounded-lg bg-gray-800">
-            <span class="text-sm font-mono flex-1">${db}</span>
+            <span class="text-sm font-mono flex-1">${esc(db)}</span>
             <span class="text-gray-500">&rarr;</span>
-            <select class="mapping-select flex-1" data-source="${db}">
-                <option value="__create__" ${createSelected ? 'selected' : ''}>Create new database: ${db}</option>
+            <select class="mapping-select flex-1" data-source="${esc(db)}">
+                <option value="__create__" ${createSelected ? 'selected' : ''}>Create new database: ${esc(db)}</option>
                 ${options}
             </select>
             ${createSelected ? '<span class="text-xs text-green-400">new</span>' : ''}
@@ -388,7 +393,7 @@ function renderCompatibility(report) {
         </div>`;
         html += '<div class="space-y-1 mb-3">';
         report.blockers.forEach(b => {
-            html += `<div class="text-xs p-2 bg-gray-800 rounded"><span class="severity-block font-bold">BLOCK</span> <span class="text-gray-300">${b.database}.${b.table}.${b.column}</span> &mdash; ${b.message}</div>`;
+            html += `<div class="text-xs p-2 bg-gray-800 rounded"><span class="severity-block font-bold">BLOCK</span> <span class="text-gray-300">${esc(b.database)}.${esc(b.table)}.${esc(b.column)}</span> &mdash; ${esc(b.message)}</div>`;
         });
         html += '</div>';
     }
@@ -400,7 +405,7 @@ function renderCompatibility(report) {
         </div>`;
         html += '<div class="space-y-1 mb-3 max-h-48 overflow-y-auto">';
         report.warnings.forEach(w => {
-            html += `<div class="text-xs p-2 bg-gray-800 rounded"><span class="severity-warn font-bold">WARN</span> <span class="text-gray-300">${w.database}.${w.table}.${w.column}</span> <span class="text-gray-500">${w.mysql_type} &rarr; ${w.pg_type}</span> &mdash; ${w.message}</div>`;
+            html += `<div class="text-xs p-2 bg-gray-800 rounded"><span class="severity-warn font-bold">WARN</span> <span class="text-gray-300">${esc(w.database)}.${esc(w.table)}.${esc(w.column)}</span> <span class="text-gray-500">${esc(w.mysql_type)} &rarr; ${esc(w.pg_type)}</span> &mdash; ${esc(w.message)}</div>`;
         });
         html += '</div>';
     }
@@ -408,7 +413,7 @@ function renderCompatibility(report) {
     html += `<div class="text-xs text-gray-400">${report.total_info} automatic mapping(s) handled.</div>`;
 
     if (report.tables_without_pk && report.tables_without_pk.length) {
-        html += `<div class="mt-2 text-xs text-yellow-400">Tables without primary key: ${report.tables_without_pk.join(', ')}</div>`;
+        html += `<div class="mt-2 text-xs text-yellow-400">Tables without primary key: ${esc(report.tables_without_pk.join(', '))}</div>`;
     }
 
     el.innerHTML = html;
@@ -432,11 +437,11 @@ function renderKafka(report) {
         <div class="card p-3 text-center"><div class="text-xs text-gray-400">Data Size</div><div class="text-lg font-bold">${report.estimated_data_gb} GB</div></div>
         <div class="card p-3 text-center"><div class="text-xs text-gray-400">Est. Duration</div><div class="text-lg font-bold">${report.estimated_duration_hours}h</div></div>
     </div>`;
-    html += `<div class="text-xs text-gray-400 mb-2">Cluster: ${report.cluster_plan} (${report.cluster_nodes} nodes, ${report.cluster_cpu_per_node} vCPU/node, ${report.cluster_storage_gb} GB storage)</div>`;
+    html += `<div class="text-xs text-gray-400 mb-2">Cluster: ${esc(report.cluster_plan)} (${report.cluster_nodes} nodes, ${report.cluster_cpu_per_node} vCPU/node, ${report.cluster_storage_gb} GB storage)</div>`;
     const statusColor = report.adequate ? 'text-green-400' : 'text-yellow-400';
     html += `<div class="text-sm font-semibold ${statusColor} mb-2">${report.adequate ? 'Cluster is adequate' : 'Cluster may be undersized'}</div>`;
     report.recommendations.forEach(r => {
-        html += `<div class="text-xs text-gray-300 mb-1">&bull; ${r}</div>`;
+        html += `<div class="text-xs text-gray-300 mb-1">&bull; ${esc(r)}</div>`;
     });
     document.getElementById('kafka-results').innerHTML = html;
     document.getElementById('btn-kafka').disabled = false;
@@ -519,8 +524,8 @@ function renderComparison(data) {
             const syncClass = t.in_sync ? 'sync-yes' : 'sync-no';
             const syncIcon = t.in_sync ? '&#10003;' : '&#10007;';
             html += `<tr class="border-t border-gray-700">
-                <td class="px-3 py-2 text-gray-400">${db.database}</td>
-                <td class="px-3 py-2 font-mono">${t.table}</td>
+                <td class="px-3 py-2 text-gray-400">${esc(db.database)}</td>
+                <td class="px-3 py-2 font-mono">${esc(t.table)}</td>
                 <td class="px-3 py-2 text-right">${fmtNum(t.source_rows)}</td>
                 <td class="px-3 py-2 text-right">${fmtNum(t.target_rows)}</td>
                 <td class="px-3 py-2 text-right ${syncClass}">${t.delta >= 0 ? fmtNum(t.delta) : '--'}</td>
@@ -536,7 +541,7 @@ function renderComparison(data) {
         let shtml = '<h3 class="text-sm font-semibold mb-2">Sample Data Comparison</h3>';
         data.samples.forEach(s => {
             shtml += `<div class="mb-3 card p-3">
-                <div class="text-xs text-gray-400 mb-2">${s.database}.${s.table} &mdash; ${s.matches} match(es), ${s.mismatches} mismatch(es)</div>
+                <div class="text-xs text-gray-400 mb-2">${esc(s.database)}.${esc(s.table)} &mdash; ${s.matches} match(es), ${s.mismatches} mismatch(es)</div>
                 <div class="grid grid-cols-2 gap-2">
                     <div><div class="text-xs text-blue-400 mb-1">Source (MySQL)</div><div class="text-xs font-mono bg-gray-900 p-2 rounded max-h-32 overflow-auto">${JSON.stringify(s.source_rows?.slice(0,3), null, 1)}</div></div>
                     <div><div class="text-xs text-green-400 mb-1">Target (PostgreSQL)</div><div class="text-xs font-mono bg-gray-900 p-2 rounded max-h-32 overflow-auto">${JSON.stringify(s.target_rows?.slice(0,3), null, 1)}</div></div>
