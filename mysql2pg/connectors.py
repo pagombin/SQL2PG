@@ -120,18 +120,15 @@ def _build_sink_base_config(
         "connection.url": connection_url,
         "connection.user": pg.username,
         "connection.password": pg.password,
-        "auto.create": "true",
+        "auto.create": "false",
         "insert.mode": "upsert",
         "delete.enabled": "true",
         "pk.mode": "record_key",
-        "pk.fields": "id",
         "key.converter": "org.apache.kafka.connect.json.JsonConverter",
         "key.converter.schemas.enable": "true",
         "value.converter": "org.apache.kafka.connect.json.JsonConverter",
         "value.converter.schemas.enable": "true",
-        "transforms": "unwrap,route",
-        "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-        "transforms.unwrap.drop.tombstones": "false",
+        "transforms": "route",
         "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
         "transforms.route.regex": route_regex,
         "transforms.route.replacement": route_replacement,
@@ -356,14 +353,11 @@ def build_discovered_connectors(
             "insert.mode": "upsert",
             "delete.enabled": "true",
             "pk.mode": "record_key",
-            "pk.fields": ",".join(sorted(pk_fields_set)) if pk_fields_set else "id",
             "key.converter": "org.apache.kafka.connect.json.JsonConverter",
             "key.converter.schemas.enable": "true",
             "value.converter": "org.apache.kafka.connect.json.JsonConverter",
             "value.converter.schemas.enable": "true",
-            "transforms": "unwrap,route",
-            "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-            "transforms.unwrap.drop.tombstones": "false",
+            "transforms": "route",
             "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
             "transforms.route.regex": "[^.]+\\.[^.]+\\.(.*)",
             "transforms.route.replacement": "$1",
@@ -371,6 +365,9 @@ def build_discovered_connectors(
             "errors.deadletterqueue.topic.name": f"dlq-{_sanitize_name(src_db)}",
             "errors.deadletterqueue.context.headers.enable": "true",
         }
+
+        if pk_fields_set:
+            sink_config["pk.fields"] = ",".join(sorted(pk_fields_set))
 
         configs.append(sink_config)
 
