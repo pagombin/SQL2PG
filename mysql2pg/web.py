@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import os
 import ssl
-import threading
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +27,6 @@ app.config["JSON_SORT_KEYS"] = False
 
 _app_config: AppConfig | None = None
 _config_path: str = "config.yaml"
-_background_tasks: dict[str, dict] = {}
 
 
 def _get_config() -> AppConfig:
@@ -646,13 +643,12 @@ def api_live_comparison(mid: str):
     if not state:
         return jsonify({"error": "Migration not found"}), 404
 
-    # Passwords must be supplied as query params for GET requests
-    mysql_password = request.args.get("mysql_password", state.mysql_password)
-    pg_password = request.args.get("pg_password", state.pg_password)
     include_samples = request.args.get("samples", "false").lower() == "true"
 
-    state.mysql_password = mysql_password
-    state.pg_password = pg_password
+    if not state.mysql_password or not state.pg_password:
+        return jsonify({
+            "error": "Passwords not available. Use POST with mysql_password and pg_password in the request body."
+        }), 400
 
     try:
         result = get_live_comparison(state, include_samples=include_samples)

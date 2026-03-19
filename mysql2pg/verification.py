@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from dataclasses import asdict
@@ -31,6 +30,11 @@ def _pg_conn(host, port, user, password, database):
         host=host, port=port, user=user, password=password,
         dbname=database, sslmode="require", connect_timeout=30,
     )
+
+
+def _pg_sql():
+    from psycopg2 import sql
+    return sql
 
 
 # ── Row Count Verification ───────────────────────────────────────────
@@ -98,6 +102,7 @@ def verify_row_counts(
                 src_count = -1
 
             try:
+                sql = _pg_sql()
                 pg_cursor.execute(
                     "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
                     "WHERE table_schema = 'public' AND table_name = %s)",
@@ -105,7 +110,7 @@ def verify_row_counts(
                 )
                 exists = pg_cursor.fetchone()[0]
                 if exists:
-                    pg_cursor.execute(f'SELECT COUNT(*) FROM "{tname}"')
+                    pg_cursor.execute(sql.SQL('SELECT COUNT(*) FROM {}').format(sql.Identifier(tname)))
                     tgt_count = pg_cursor.fetchone()[0]
                 else:
                     tgt_count = -1
@@ -213,13 +218,21 @@ def verify_fk_integrity(
         """)
         fks = cursor.fetchall()
 
+        sql = _pg_sql()
         for constraint_name, table_name, column_name, ref_table, ref_column in fks:
             try:
-                cursor.execute(f"""
-                    SELECT COUNT(*) FROM "{table_name}" t
-                    LEFT JOIN "{ref_table}" r ON t."{column_name}" = r."{ref_column}"
-                    WHERE t."{column_name}" IS NOT NULL AND r."{ref_column}" IS NULL
-                """)
+                cursor.execute(sql.SQL(
+                    'SELECT COUNT(*) FROM {} t'
+                    ' LEFT JOIN {} r ON t.{} = r.{}'
+                    ' WHERE t.{} IS NOT NULL AND r.{} IS NULL'
+                ).format(
+                    sql.Identifier(table_name),
+                    sql.Identifier(ref_table),
+                    sql.Identifier(column_name),
+                    sql.Identifier(ref_column),
+                    sql.Identifier(column_name),
+                    sql.Identifier(ref_column),
+                ))
                 orphan_count = cursor.fetchone()[0]
                 results.append({
                     "constraint": constraint_name,
@@ -275,7 +288,6 @@ def compare_sample_data(
         return result
 
     order_by_mysql = ", ".join(f"`{c}`" for c in pk_columns)
-    order_by_pg = ", ".join(f'"{c}"' for c in pk_columns)
 
     # MySQL sample
     try:
@@ -305,6 +317,7 @@ def compare_sample_data(
         pg.autocommit = True
         pg_cursor = pg.cursor()
 
+        sql = _pg_sql()
         pg_cursor.execute(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
             "WHERE table_schema = 'public' AND table_name = %s)",
@@ -316,7 +329,13 @@ def compare_sample_data(
             pg.close()
             return result
 
-        pg_cursor.execute(f'SELECT * FROM "{table_name}" ORDER BY {order_by_pg} LIMIT %s', (sample_size,))
+        order_clause = sql.SQL(', ').join(sql.Identifier(c) for c in pk_columns)
+        pg_cursor.execute(
+            sql.SQL('SELECT * FROM {} ORDER BY {} LIMIT %s').format(
+                sql.Identifier(table_name), order_clause,
+            ),
+            (sample_size,),
+        )
         col_names = [desc[0] for desc in pg_cursor.description]
         tgt_rows = []
         for row in pg_cursor.fetchall():
