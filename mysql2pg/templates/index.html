@@ -268,19 +268,28 @@ async function fetchStatus() {
 
         connectors.forEach(c => {
             const stateClass = 'state-' + c.state.toLowerCase();
-            const tasks = c.tasks.map(t => t.state).join(', ') || 'none';
+            const taskStates = c.tasks.map(t => t.state).join(', ') || 'none';
             const safeName = esc(c.name);
             const encodedName = encodeURIComponent(c.name);
+
+            const failedTask = c.tasks.find(t => t.state === 'FAILED' && t.trace);
+            let traceHtml = '';
+            if (failedTask) {
+                const shortTrace = esc(failedTask.trace.split('\n').slice(0, 3).join('\n'));
+                traceHtml = `<tr class="border-t border-gray-800"><td colspan="5" class="px-4 py-2"><div class="text-xs font-mono text-red-300 bg-red-900 bg-opacity-20 p-2 rounded max-h-24 overflow-y-auto whitespace-pre-wrap">${shortTrace}</div></td></tr>`;
+            }
+
             html += `<tr class="border-t border-gray-700">
                 <td class="px-4 py-3 font-mono text-xs">${safeName}</td>
                 <td class="px-4 py-3 font-semibold ${stateClass}">${esc(c.state)}</td>
                 <td class="px-4 py-3 text-gray-400">${esc(c.type)}</td>
-                <td class="px-4 py-3 text-gray-400 text-xs">${esc(tasks)}</td>
-                <td class="px-4 py-3 text-right">
-                    <button onclick="connectorAction('${encodedName}','pause')" class="text-xs text-yellow-400 hover:text-yellow-300 mr-2">Pause</button>
-                    <button onclick="connectorAction('${encodedName}','resume')" class="text-xs text-green-400 hover:text-green-300 mr-2">Resume</button>
-                    <button onclick="connectorAction('${encodedName}','restart')" class="text-xs text-blue-400 hover:text-blue-300">Restart</button>
-                </td></tr>`;
+                <td class="px-4 py-3 text-gray-400 text-xs">${esc(taskStates)}</td>
+                <td class="px-4 py-3 text-right text-nowrap">
+                    <button onclick="connectorAction('${encodedName}','pause')" class="text-xs text-yellow-400 hover:text-yellow-300 mr-1">Pause</button>
+                    <button onclick="connectorAction('${encodedName}','resume')" class="text-xs text-green-400 hover:text-green-300 mr-1">Resume</button>
+                    <button onclick="connectorAction('${encodedName}','restart')" class="text-xs text-blue-400 hover:text-blue-300 mr-1">Restart</button>
+                    <button onclick="deleteConnector('${encodedName}')" class="text-xs text-red-400 hover:text-red-300">Delete</button>
+                </td></tr>${traceHtml}`;
         });
 
         html += '</tbody></table>';
@@ -426,6 +435,19 @@ async function restartFailed() {
             toast('No failed tasks to restart', 'info');
         }
         setTimeout(fetchStatus, 2000);
+    } catch {}
+}
+
+async function deleteConnector(encodedName) {
+    const name = decodeURIComponent(encodedName);
+    if (!confirm(`Delete connector "${name}"? This cannot be undone.`)) return;
+    log(`Deleting connector: ${name}`, 'warn');
+    try {
+        const svc = selectedService ? `?service=${encodeURIComponent(selectedService)}` : '';
+        await api(`/api/connector/${encodedName}${svc}`, { method: 'DELETE' });
+        log(`Connector ${name} deleted`, 'success');
+        toast(`Deleted: ${name}`, 'success');
+        setTimeout(fetchStatus, 1000);
     } catch {}
 }
 

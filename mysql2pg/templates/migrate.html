@@ -41,6 +41,7 @@
     </div>
     <div class="flex items-center gap-3">
         <span id="migration-id-badge" class="text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-400"></span>
+        <button onclick="startNewMigration()" class="btn text-xs px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600">New Migration</button>
         <a href="/" class="btn text-xs px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600">Dashboard</a>
     </div>
 </header>
@@ -177,6 +178,20 @@
 
     <div id="sample-data" class="mb-4"></div>
 
+    <!-- Connector Status -->
+    <div class="card p-4 mb-4">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-semibold">Connector Status</h3>
+            <div class="flex gap-2">
+                <button onclick="refreshConnectorStatus()" class="btn text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700">Refresh</button>
+                <button onclick="deleteAllMigrationConnectors()" class="btn text-xs px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700">Delete All Connectors</button>
+            </div>
+        </div>
+        <div id="connector-status-panel">
+            <div class="text-xs text-gray-500">Click Refresh to load connector status.</div>
+        </div>
+    </div>
+
     <!-- Schema Drift Detection -->
     <div class="card p-4 mb-4">
         <div class="flex items-center justify-between mb-2">
@@ -274,8 +289,51 @@ function fmtBytes(b) {
 
 function fmtNum(n) { return (n||0).toLocaleString(); }
 
+const PHASE_STEP_MAP = {
+    'created': 0,
+    'source_discovered': 2, 'discovering_source': 1,
+    'databases_selected': 3, 'selecting_databases': 2,
+    'target_discovered': 4, 'discovering_target': 3,
+    'compatibility_reviewed': 5, 'analyzing_compatibility': 5,
+    'kafka_validated': 7, 'validating_kafka': 6,
+    'schema_created': 8, 'creating_schema': 7,
+    'connectors_running': 9, 'deploying_connectors': 8,
+    'snapshot_in_progress': 9, 'snapshot_complete': 9,
+    'applying_constraints': 9, 'constraints_applied': 9,
+    'verifying': 9, 'verified': 9, 'streaming': 9,
+    'completed': 9, 'failed': 0,
+};
+
 // ── Init ───────────────────────────────────────────────────────────
 async function init() {
+    try {
+        const listData = await api('/api/migrations');
+        const migrations = (listData.migrations || []).filter(m =>
+            m.phase !== 'completed' && m.phase !== 'failed'
+        );
+
+        if (migrations.length > 0) {
+            const latest = migrations[0];
+            MID = latest.migration_id;
+            const state = await api(`/api/migrations/${MID}`);
+            updateState(state);
+            const step = PHASE_STEP_MAP[state.phase] || 0;
+            showStep(step);
+            loadKafkaServices();
+            toast(`Resumed migration ${MID} (${state.phase.replace(/_/g, ' ')})`, 'info');
+        } else {
+            const data = await api('/api/migrations', {method:'POST'});
+            MID = data.migration_id;
+            const state = await api(`/api/migrations/${MID}`);
+            updateState(state);
+            showStep(0);
+            loadKafkaServices();
+        }
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+async function startNewMigration() {
+    if (!confirm('Start a new migration? The current migration will remain in its current state.')) return;
     try {
         const data = await api('/api/migrations', {method:'POST'});
         MID = data.migration_id;
@@ -283,6 +341,7 @@ async function init() {
         updateState(state);
         showStep(0);
         loadKafkaServices();
+        toast('New migration created', 'info');
     } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -326,7 +385,12 @@ async function selectKafkaService() {
             body: JSON.stringify({service_name: selected.value}),
         });
         updateState(data);
-        status.textContent = 'Kafka service selected!';
+        const steps = data.setup_steps || [];
+        if (steps.length > 0) {
+            status.textContent = `Kafka service configured (${steps.join(', ')})`;
+        } else {
+            status.textContent = 'Kafka service selected!';
+        }
         showStep(1);
     } catch(e) { status.textContent = e.message; btn.disabled = false; toast(e.message, 'error'); }
 }
@@ -633,6 +697,87 @@ function toggleAutoRefresh() {
         btn.textContent = 'Auto-Refresh: On (10s)';
         btn.className = 'btn text-xs px-3 py-1.5 rounded-lg bg-green-700';
     }
+}
+
+async function refreshConnectorStatus() {
+    if (!STATE || !STATE.kafka_service_name) { toast('No Kafka service selected', 'warn'); return; }
+    try {
+        const svc = encodeURIComponent(STATE.kafka_service_name);
+        const data = await api(`/api/status?service=${svc}`);
+        const el = document.getElementById('connector-status-panel');
+        const connectors = data.connectors || [];
+
+        if (data.kafka_connect_disabled) {
+            el.innerHTML = `<div class="text-sm text-yellow-400">${esc(data.message)}</div>`;
+            return;
+        }
+        if (!connectors.length) {
+            el.innerHTML = '<div class="text-xs text-gray-500">No connectors found on this Kafka service.</div>';
+            return;
+        }
+
+        let html = '<div class="space-y-2">';
+        connectors.forEach(c => {
+            const stateColor = {RUNNING:'text-green-400', PAUSED:'text-yellow-400', FAILED:'text-red-400'}[c.state] || 'text-gray-400';
+            const taskStates = c.tasks.map(t => t.state).join(', ') || 'none';
+            const failedTask = c.tasks.find(t => t.state === 'FAILED' && t.trace);
+            const encodedName = encodeURIComponent(c.name);
+
+            html += `<div class="bg-gray-800 rounded-lg p-3">
+                <div class="flex items-center justify-between mb-1">
+                    <div>
+                        <span class="text-xs font-mono">${esc(c.name)}</span>
+                        <span class="ml-2 text-xs font-semibold ${stateColor}">${esc(c.state)}</span>
+                        <span class="ml-2 text-xs text-gray-500">Tasks: ${esc(taskStates)}</span>
+                    </div>
+                    <div class="flex gap-1">
+                        <button onclick="wizConnAction('${encodedName}','restart')" class="text-xs text-blue-400 hover:text-blue-300">Restart</button>
+                        <button onclick="wizConnAction('${encodedName}','pause')" class="text-xs text-yellow-400 hover:text-yellow-300">Pause</button>
+                        <button onclick="wizConnAction('${encodedName}','resume')" class="text-xs text-green-400 hover:text-green-300">Resume</button>
+                        <button onclick="wizDeleteConnector('${encodedName}')" class="text-xs text-red-400 hover:text-red-300">Delete</button>
+                    </div>
+                </div>`;
+            if (failedTask) {
+                const trace = esc(failedTask.trace.substring(0, 800));
+                html += `<div class="text-xs font-mono text-red-300 bg-red-900 bg-opacity-20 p-2 rounded mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap">${trace}</div>`;
+            }
+            html += '</div>';
+        });
+        html += '</div>';
+        el.innerHTML = html;
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+async function wizConnAction(encodedName, action) {
+    const svc = STATE.kafka_service_name ? `?service=${encodeURIComponent(STATE.kafka_service_name)}` : '';
+    try {
+        await api(`/api/connector/${encodedName}/${action}${svc}`, { method: 'POST' });
+        toast(`${decodeURIComponent(encodedName)}: ${action} done`, 'success');
+        setTimeout(refreshConnectorStatus, 1500);
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+async function wizDeleteConnector(encodedName) {
+    const name = decodeURIComponent(encodedName);
+    if (!confirm(`Delete connector "${name}"?`)) return;
+    try {
+        const svc = STATE.kafka_service_name ? `?service=${encodeURIComponent(STATE.kafka_service_name)}` : '';
+        await api(`/api/connector/${encodedName}${svc}`, { method: 'DELETE' });
+        toast(`Deleted: ${name}`, 'success');
+        setTimeout(refreshConnectorStatus, 1000);
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteAllMigrationConnectors() {
+    if (!confirm('Delete ALL connectors on this Kafka service? This cannot be undone.')) return;
+    try {
+        const data = await api('/api/teardown', {
+            method: 'POST',
+            body: JSON.stringify({service: STATE.kafka_service_name, all: true}),
+        });
+        toast(`Deleted ${data.deleted_count} connector(s)`, 'success');
+        setTimeout(refreshConnectorStatus, 1000);
+    } catch(e) { toast(e.message, 'error'); }
 }
 
 async function checkDrift() {
