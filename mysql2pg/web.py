@@ -47,13 +47,27 @@ def _get_client() -> AivenClient:
     return AivenClient(config.aiven.token, config.aiven.project)
 
 
-def _resolve_ssl(config: AppConfig, client: AivenClient | None = None) -> tuple[str, int]:
+def _get_kafka_service(config: AppConfig | None = None) -> str:
+    """Get the Kafka service name from config or request args."""
+    svc = request.args.get("service", "")
+    if svc:
+        return svc
+    if config and config.kafka and config.kafka.service_name:
+        return config.kafka.service_name
+    return ""
+
+
+def _resolve_ssl_for_service(
+    service_name: str,
+    config: AppConfig | None = None,
+    client: AivenClient | None = None,
+) -> tuple[str, int]:
     """Return Kafka SSL host/port, resolving from the Aiven API if needed."""
-    if config.kafka.ssl_host and config.kafka.ssl_port:
+    if config and config.kafka and config.kafka.ssl_host and config.kafka.ssl_port:
         return config.kafka.ssl_host, config.kafka.ssl_port
     if client is None:
         client = _get_client()
-    return client.get_kafka_ssl_endpoint(config.kafka.service_name)
+    return client.get_kafka_ssl_endpoint(service_name)
 
 
 def _plan_to_dict(plan: ConnectorPlan) -> dict:
@@ -84,29 +98,28 @@ def health():
 def info():
     try:
         config = _get_config()
-        sources = []
-        for src in config.mysql_sources:
-            dbs = [{"name": db.name, "tables": db.tables} for db in src.databases]
-            sources.append({
-                "name": src.name,
-                "host": src.host,
-                "port": src.port,
-                "server_id": src.server_id,
-                "databases": dbs,
-            })
-        return jsonify({
+        result: dict = {
             "aiven_project": config.aiven.project,
-            "kafka_service": config.kafka.service_name,
-            "kafka_ssl": f"{config.kafka.ssl_host}:{config.kafka.ssl_port}" if config.kafka.ssl_host else "auto-resolved from API",
-            "table_name_strategy": config.table_name_strategy,
-            "mysql_sources": sources,
-            "postgresql_target": {
+        }
+        if config.kafka and config.kafka.service_name:
+            result["kafka_service"] = config.kafka.service_name
+        if config.mysql_sources:
+            result["mysql_sources"] = [
+                {
+                    "name": src.name, "host": src.host, "port": src.port,
+                    "server_id": src.server_id,
+                    "databases": [{"name": db.name, "tables": db.tables} for db in src.databases],
+                }
+                for src in config.mysql_sources
+            ]
+        if config.postgresql_target:
+            result["postgresql_target"] = {
                 "host": config.postgresql_target.host,
                 "port": config.postgresql_target.port,
                 "database": config.postgresql_target.database,
                 "username": config.postgresql_target.username,
-            },
-        })
+            }
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -117,7 +130,9 @@ def info():
 def plan():
     try:
         config = _get_config()
-        ssl_host, ssl_port = _resolve_ssl(config)
+        if not config.mysql_sources or not config.kafka:
+            return jsonify({"error": "Plan requires mysql_sources and kafka in config.yaml. Use the Migration Wizard instead."}), 400
+        ssl_host, ssl_port = _resolve_ssl_for_service(config.kafka.service_name, config)
         plans = build_all_connectors(config, ssl_host, ssl_port)
         return jsonify({
             "connectors": [_plan_to_dict(p) for p in plans],
@@ -135,7 +150,9 @@ def status():
     try:
         config = _get_config()
         client = _get_client()
-        kafka_svc = config.kafka.service_name
+        kafka_svc = _get_kafka_service(config)
+        if not kafka_svc:
+            return jsonify({"connectors": [], "message": "No Kafka service selected"})
 
         result = client.list_connectors(kafka_svc)
         connectors = result.get("connectors", [])
@@ -174,7 +191,10 @@ def setup():
     try:
         config = _get_config()
         client = _get_client()
-        kafka_svc = config.kafka.service_name
+        body = request.get_json(silent=True) or {}
+        kafka_svc = body.get("service") or _get_kafka_service(config)
+        if not kafka_svc:
+            return jsonify({"error": "No Kafka service specified"}), 400
 
         steps = []
 
@@ -197,13 +217,15 @@ def setup():
 def deploy():
     try:
         config = _get_config()
+        if not config.mysql_sources or not config.kafka:
+            return jsonify({"error": "Deploy requires mysql_sources and kafka in config.yaml. Use the Migration Wizard instead."}), 400
         client = _get_client()
         kafka_svc = config.kafka.service_name
 
         body = request.get_json(silent=True) or {}
         filter_type = body.get("type")
 
-        ssl_host, ssl_port = _resolve_ssl(config, client)
+        ssl_host, ssl_port = _resolve_ssl_for_service(kafka_svc, config, client)
         all_plans = build_all_connectors(config, ssl_host, ssl_port)
         if filter_type == "source":
             plans = [p for p in all_plans if p.connector_type == "source"]
@@ -244,17 +266,22 @@ def teardown():
     try:
         config = _get_config()
         client = _get_client()
-        kafka_svc = config.kafka.service_name
-
         body = request.get_json(silent=True) or {}
-        delete_all = body.get("all", False)
+        kafka_svc = body.get("service") or _get_kafka_service(config)
+        if not kafka_svc:
+            return jsonify({"error": "No Kafka service specified"}), 400
+
+        delete_all = body.get("all", True)
 
         if delete_all:
             result = client.list_connectors(kafka_svc)
             names = [c.get("name") for c in result.get("connectors", []) if c.get("name")]
-        else:
-            ssl_host, ssl_port = _resolve_ssl(config, client)
+        elif config.kafka and config.mysql_sources:
+            ssl_host, ssl_port = _resolve_ssl_for_service(kafka_svc, config, client)
             names = get_all_connector_names(config, ssl_host, ssl_port)
+        else:
+            result = client.list_connectors(kafka_svc)
+            names = [c.get("name") for c in result.get("connectors", []) if c.get("name")]
 
         deleted = []
         failed = []
@@ -288,7 +315,9 @@ def verify():
     try:
         config = _get_config()
         client = _get_client()
-        kafka_svc = config.kafka.service_name
+        kafka_svc = _get_kafka_service(config)
+        if not kafka_svc:
+            return jsonify({"error": "No Kafka service specified. Select one first."}), 400
 
         features = client.get_service_features(kafka_svc)
         checks = {
@@ -367,6 +396,20 @@ def reload_config():
         return jsonify({"error": str(e)}), 500
 
 
+# ── API: Kafka Services ──────────────────────────────────────────────
+
+@app.route("/api/kafka-services")
+def api_kafka_services():
+    try:
+        client = _get_client()
+        services = client.list_kafka_services()
+        return jsonify({"services": services})
+    except AivenAPIError as e:
+        return jsonify({"error": str(e), "status_code": e.status_code}), 502
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Migration Wizard API
 # ══════════════════════════════════════════════════════════════════════
@@ -386,6 +429,7 @@ from .migration import (
     step_discover_source,
     step_discover_target,
     step_select_databases,
+    step_select_kafka_service,
     step_set_database_mappings,
     step_start_streaming,
     step_validate_kafka,
@@ -424,6 +468,29 @@ def api_delete_migration(mid: str):
     if delete_migration(mid):
         return jsonify({"message": "Deleted"})
     return jsonify({"error": "Not found"}), 404
+
+
+# ── Step: Select Kafka Service ───────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/select-kafka", methods=["POST"])
+def api_select_kafka(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    service_name = body.get("service_name", "")
+    if not service_name:
+        return jsonify({"error": "Missing service_name"}), 400
+
+    try:
+        client = _get_client()
+        client.get_service(service_name)
+    except AivenAPIError as e:
+        return jsonify({"error": f"Cannot connect to Kafka service '{service_name}': {e}"}), 400
+
+    state = step_select_kafka_service(state, service_name)
+    return jsonify(state.to_dict())
 
 
 # ── Step: Discover Source ────────────────────────────────────────────

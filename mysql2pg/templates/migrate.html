@@ -47,21 +47,33 @@
 
 <!-- Step Indicators -->
 <div class="px-6 py-4 flex gap-1 overflow-x-auto" id="step-indicators">
-    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="0">1. Source</div>
-    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="1">2. Databases</div>
-    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="2">3. Target</div>
-    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="3">4. Mappings</div>
-    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="4">5. Compatibility</div>
-    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="5">6. Kafka</div>
-    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="6">7. Schema</div>
-    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="7">8. Deploy</div>
-    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="8">9. Monitor</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="0">1. Kafka</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="1">2. Source</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="2">3. Databases</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="3">4. Target</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="4">5. Mappings</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="5">6. Compatibility</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="6">7. Kafka Check</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="7">8. Schema</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="8">9. Deploy</div>
+    <div class="step-item step-pending px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap" data-step="9">10. Monitor</div>
 </div>
 
 <main class="px-6 py-4 max-w-5xl mx-auto">
 
-<!-- Step 0: Connect to Source MySQL -->
+<!-- Step 0: Select Kafka Service -->
 <section id="step-0" class="card p-6 fade-in hidden">
+    <h2 class="text-base font-semibold mb-1">Select Kafka Service</h2>
+    <p class="text-xs text-gray-400 mb-4">Choose the Kafka cluster that will handle CDC replication. Available services are loaded from your Aiven project.</p>
+    <div id="kafka-service-list" class="space-y-2 mb-4">
+        <div class="text-sm text-gray-500"><span class="spinner"></span> Loading Kafka services...</div>
+    </div>
+    <button onclick="selectKafkaService()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium" id="btn-select-kafka" disabled>Continue</button>
+    <span id="kafka-status" class="ml-3 text-xs text-gray-400"></span>
+</section>
+
+<!-- Step 1: Connect to Source MySQL -->
+<section id="step-1" class="card p-6 fade-in hidden">
     <h2 class="text-base font-semibold mb-1">Connect to Source MySQL</h2>
     <p class="text-xs text-gray-400 mb-4">Enter the connection details for your MySQL cluster. The application will discover all databases, tables, and relationships.</p>
     <div class="grid grid-cols-2 gap-4 mb-4">
@@ -74,8 +86,8 @@
     <span id="src-status" class="ml-3 text-xs text-gray-400"></span>
 </section>
 
-<!-- Step 1: Select Databases -->
-<section id="step-1" class="card p-6 fade-in hidden">
+<!-- Step 2: Select Databases -->
+<section id="step-2" class="card p-6 fade-in hidden">
     <h2 class="text-base font-semibold mb-1">Select Databases to Migrate</h2>
     <p class="text-xs text-gray-400 mb-4">Choose which databases from the source cluster you want to migrate to PostgreSQL.</p>
     <div id="db-list" class="space-y-2 mb-4"></div>
@@ -83,8 +95,8 @@
     <button onclick="selectDatabases()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium" id="btn-select-dbs">Continue</button>
 </section>
 
-<!-- Step 2: Connect to Target PostgreSQL -->
-<section id="step-2" class="card p-6 fade-in hidden">
+<!-- Step 3: Connect to Target PostgreSQL -->
+<section id="step-3" class="card p-6 fade-in hidden">
     <h2 class="text-base font-semibold mb-1">Connect to Target PostgreSQL</h2>
     <p class="text-xs text-gray-400 mb-4">Enter the connection details for your PostgreSQL target cluster.</p>
     <div class="grid grid-cols-2 gap-4 mb-4">
@@ -98,32 +110,32 @@
     <span id="tgt-status" class="ml-3 text-xs text-gray-400"></span>
 </section>
 
-<!-- Step 3: Database Mappings -->
-<section id="step-3" class="card p-6 fade-in hidden">
+<!-- Step 4: Database Mappings -->
+<section id="step-4" class="card p-6 fade-in hidden">
     <h2 class="text-base font-semibold mb-1">Database Mappings</h2>
     <p class="text-xs text-gray-400 mb-4">Map each source MySQL database to a target PostgreSQL database. The target database will be used for schema and data.</p>
     <div id="mapping-list" class="space-y-3 mb-4"></div>
     <button onclick="setMappings()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium">Continue</button>
 </section>
 
-<!-- Step 4: Compatibility Analysis -->
-<section id="step-4" class="card p-6 fade-in hidden">
+<!-- Step 5: Compatibility Analysis -->
+<section id="step-5" class="card p-6 fade-in hidden">
     <h2 class="text-base font-semibold mb-1">Compatibility Analysis</h2>
     <p class="text-xs text-gray-400 mb-4">Analyzing every column type for PostgreSQL compatibility.</p>
     <div id="compat-results" class="mb-4"></div>
     <button onclick="acknowledgeCompat()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium" id="btn-compat" disabled>Acknowledge &amp; Continue</button>
 </section>
 
-<!-- Step 5: Kafka Sizing -->
-<section id="step-5" class="card p-6 fade-in hidden">
+<!-- Step 6: Kafka Sizing -->
+<section id="step-6" class="card p-6 fade-in hidden">
     <h2 class="text-base font-semibold mb-1">Kafka Cluster Validation</h2>
     <p class="text-xs text-gray-400 mb-4">Checking whether your Kafka cluster can handle the migration workload.</p>
     <div id="kafka-results" class="mb-4"></div>
     <button onclick="acknowledgeKafka()" class="btn px-4 py-2 rounded-lg bg-blue-600 text-sm font-medium" id="btn-kafka" disabled>Acknowledge &amp; Continue</button>
 </section>
 
-<!-- Step 6: Schema Creation -->
-<section id="step-6" class="card p-6 fade-in hidden">
+<!-- Step 7: Schema Creation -->
+<section id="step-7" class="card p-6 fade-in hidden">
     <h2 class="text-base font-semibold mb-1">Schema Creation</h2>
     <p class="text-xs text-gray-400 mb-4">Creating PostgreSQL tables, indexes, and types from the discovered MySQL schema. Foreign keys will be applied after data loading.</p>
     <div id="schema-results" class="mb-4"></div>
@@ -131,8 +143,8 @@
     <span id="schema-status" class="ml-3 text-xs text-gray-400"></span>
 </section>
 
-<!-- Step 7: Deploy Connectors -->
-<section id="step-7" class="card p-6 fade-in hidden">
+<!-- Step 8: Deploy Connectors -->
+<section id="step-8" class="card p-6 fade-in hidden">
     <h2 class="text-base font-semibold mb-1">Deploy Connectors</h2>
     <p class="text-xs text-gray-400 mb-4">Deploying Debezium source connector and JDBC sink connectors to start CDC replication.</p>
     <div id="deploy-results" class="mb-4"></div>
@@ -140,8 +152,8 @@
     <span id="deploy-status" class="ml-3 text-xs text-gray-400"></span>
 </section>
 
-<!-- Step 8: Monitor / Live Comparison -->
-<section id="step-8" class="card p-6 fade-in hidden">
+<!-- Step 9: Monitor / Live Comparison -->
+<section id="step-9" class="card p-6 fade-in hidden">
     <h2 class="text-base font-semibold mb-1">Migration Monitor &amp; Live Data Comparison</h2>
     <p class="text-xs text-gray-400 mb-4">Real-time comparison between source and target databases.</p>
 
@@ -215,7 +227,7 @@ async function api(path, opts={}) {
 }
 
 function showStep(n) {
-    for (let i = 0; i <= 8; i++) document.getElementById('step-'+i).classList.add('hidden');
+    for (let i = 0; i <= 9; i++) document.getElementById('step-'+i).classList.add('hidden');
     document.getElementById('step-'+n).classList.remove('hidden');
     currentStep = n;
     document.querySelectorAll('.step-item').forEach(el => {
@@ -260,10 +272,56 @@ async function init() {
         const state = await api(`/api/migrations/${MID}`);
         updateState(state);
         showStep(0);
+        loadKafkaServices();
     } catch(e) { toast(e.message, 'error'); }
 }
 
-// ── Step 0: Discover Source ────────────────────────────────────────
+// ── Step 0: Select Kafka Service ──────────────────────────────────
+async function loadKafkaServices() {
+    try {
+        const data = await api('/api/kafka-services');
+        const el = document.getElementById('kafka-service-list');
+        const services = data.services || [];
+        if (!services.length) {
+            el.innerHTML = '<div class="text-sm text-yellow-400">No Kafka services found in this Aiven project.</div>';
+            return;
+        }
+        el.innerHTML = services.map(s => {
+            const stateColor = s.state === 'RUNNING' ? 'text-green-400' : 'text-yellow-400';
+            return `<label class="flex items-center gap-3 p-3 rounded-lg bg-gray-800 hover:bg-gray-700 cursor-pointer">
+                <input type="radio" name="kafka-service" class="kafka-radio" value="${esc(s.name)}" ${services.length===1?'checked':''}>
+                <div class="flex-1">
+                    <div class="text-sm font-medium">${esc(s.name)}</div>
+                    <div class="text-xs text-gray-400">${esc(s.plan)} &middot; <span class="${stateColor}">${esc(s.state)}</span> &middot; ${esc(s.cloud)}</div>
+                </div>
+            </label>`;
+        }).join('');
+        document.getElementById('btn-select-kafka').disabled = false;
+        if (services.length === 1) {
+            document.getElementById('btn-select-kafka').disabled = false;
+        }
+    } catch(e) { toast(e.message, 'error'); }
+}
+
+async function selectKafkaService() {
+    const selected = document.querySelector('.kafka-radio:checked');
+    if (!selected) { toast('Select a Kafka service', 'warn'); return; }
+    const btn = document.getElementById('btn-select-kafka');
+    const status = document.getElementById('kafka-status');
+    btn.disabled = true;
+    status.innerHTML = '<span class="spinner"></span> Validating...';
+    try {
+        const data = await api(`/api/migrations/${MID}/select-kafka`, {
+            method: 'POST',
+            body: JSON.stringify({service_name: selected.value}),
+        });
+        updateState(data);
+        status.textContent = 'Kafka service selected!';
+        showStep(1);
+    } catch(e) { status.textContent = e.message; btn.disabled = false; toast(e.message, 'error'); }
+}
+
+// ── Step 1: Discover Source ────────────────────────────────────────
 async function discoverSource() {
     const btn = document.getElementById('btn-discover-src');
     const status = document.getElementById('src-status');
@@ -283,7 +341,7 @@ async function discoverSource() {
         if (data.phase === 'failed') { status.textContent = 'Failed: ' + data.error_message; btn.disabled = false; return; }
         status.textContent = 'Discovery complete!';
         renderDatabaseList(data.source_cluster);
-        showStep(1);
+        showStep(2);
     } catch(e) { status.textContent = e.message; toast(e.message,'error'); btn.disabled = false; }
 }
 
@@ -311,11 +369,11 @@ async function selectDatabases() {
             method: 'POST', body: JSON.stringify({databases: checked}),
         });
         updateState(data);
-        showStep(2);
+        showStep(3);
     } catch(e) { toast(e.message,'error'); }
 }
 
-// ── Step 2: Discover Target ───────────────────────────────────────
+// ── Step 3: Discover Target ───────────────────────────────────────
 async function discoverTarget() {
     const btn = document.getElementById('btn-discover-tgt');
     const status = document.getElementById('tgt-status');
@@ -336,7 +394,7 @@ async function discoverTarget() {
         if (data.phase === 'failed') { status.textContent = 'Failed: ' + data.error_message; btn.disabled = false; return; }
         status.textContent = 'Target discovered!';
         renderMappings(data);
-        showStep(3);
+        showStep(4);
     } catch(e) { status.textContent = e.message; toast(e.message,'error'); btn.disabled = false; }
 }
 
@@ -374,14 +432,14 @@ async function setMappings() {
         updateState(data);
         // Auto-run compatibility
         document.getElementById('compat-results').innerHTML = '<div class="spinner"></div> Analyzing...';
-        showStep(4);
+        showStep(5);
         data = await api(`/api/migrations/${MID}/analyze`, {method:'POST'});
         updateState(data);
         renderCompatibility(data.compatibility_report);
     } catch(e) { toast(e.message,'error'); }
 }
 
-// ── Step 4: Compatibility ─────────────────────────────────────────
+// ── Step 5: Compatibility ─────────────────────────────────────────
 function renderCompatibility(report) {
     const el = document.getElementById('compat-results');
     let html = '';
@@ -422,7 +480,7 @@ function renderCompatibility(report) {
 
 async function acknowledgeCompat() {
     document.getElementById('kafka-results').innerHTML = '<div class="spinner"></div> Validating Kafka...';
-    showStep(5);
+    showStep(6);
     try {
         const data = await api(`/api/migrations/${MID}/validate-kafka`, {method:'POST'});
         updateState(data);
@@ -430,7 +488,7 @@ async function acknowledgeCompat() {
     } catch(e) { toast(e.message,'error'); }
 }
 
-// ── Step 5: Kafka Sizing ──────────────────────────────────────────
+// ── Step 6: Kafka Sizing ──────────────────────────────────────────
 function renderKafka(report) {
     let html = `<div class="grid grid-cols-3 gap-3 mb-3">
         <div class="card p-3 text-center"><div class="text-xs text-gray-400">Topics</div><div class="text-lg font-bold">${report.topics_needed}</div></div>
@@ -447,9 +505,9 @@ function renderKafka(report) {
     document.getElementById('btn-kafka').disabled = false;
 }
 
-function acknowledgeKafka() { showStep(6); }
+function acknowledgeKafka() { showStep(7); }
 
-// ── Step 6: Create Schema ─────────────────────────────────────────
+// ── Step 7: Create Schema ─────────────────────────────────────────
 async function createSchema() {
     const btn = document.getElementById('btn-schema');
     const status = document.getElementById('schema-status');
@@ -464,11 +522,11 @@ async function createSchema() {
         if (data.phase === 'failed') { status.textContent = 'Failed'; btn.disabled = false; return; }
         status.textContent = 'Schema created!';
         document.getElementById('schema-results').innerHTML = `<div class="text-sm text-green-400">Schema creation complete. ${(data.ddl_statements||[]).length} DDL statements generated.</div>`;
-        showStep(7);
+        showStep(8);
     } catch(e) { status.textContent = e.message; btn.disabled = false; toast(e.message,'error'); }
 }
 
-// ── Step 7: Deploy Connectors ─────────────────────────────────────
+// ── Step 8: Deploy Connectors ─────────────────────────────────────
 async function deployConnectors() {
     const btn = document.getElementById('btn-deploy');
     const status = document.getElementById('deploy-status');
@@ -486,11 +544,11 @@ async function deployConnectors() {
         if (data.phase === 'failed') { status.textContent = 'Failed'; btn.disabled = false; return; }
         status.textContent = 'Connectors deployed!';
         document.getElementById('deploy-results').innerHTML = `<div class="text-sm text-green-400">${(data.connector_configs||[]).length} connector(s) deployed. CDC replication starting.</div>`;
-        showStep(8);
+        showStep(9);
     } catch(e) { status.textContent = e.message; btn.disabled = false; toast(e.message,'error'); }
 }
 
-// ── Step 8: Monitor & Live Comparison ─────────────────────────────
+// ── Step 9: Monitor & Live Comparison ─────────────────────────────
 async function refreshComparison() {
     try {
         const data = await api(`/api/migrations/${MID}/compare`, {
