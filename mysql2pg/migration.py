@@ -108,11 +108,15 @@ def create_migration() -> MigrationState:
     return state
 
 
-def _resolve_kafka_ssl(app_config: AppConfig, client: AivenClient) -> tuple[str, int]:
+def _resolve_kafka_ssl(
+    kafka_service_name: str,
+    app_config: AppConfig,
+    client: AivenClient,
+) -> tuple[str, int]:
     """Return the Kafka SSL host and port, resolving from the API if needed."""
-    if app_config.kafka.ssl_host and app_config.kafka.ssl_port:
+    if app_config.kafka and app_config.kafka.ssl_host and app_config.kafka.ssl_port:
         return app_config.kafka.ssl_host, app_config.kafka.ssl_port
-    return client.get_kafka_ssl_endpoint(app_config.kafka.service_name)
+    return client.get_kafka_ssl_endpoint(kafka_service_name)
 
 
 def _get_effective_mappings(state: MigrationState) -> list[dict]:
@@ -473,7 +477,7 @@ def step_deploy_connectors(
         cluster = rebuild_cluster_from_summary(state.source_cluster)
         mappings = _get_effective_mappings(state)
 
-        ssl_host, ssl_port = _resolve_kafka_ssl(app_config, client)
+        ssl_host, ssl_port = _resolve_kafka_ssl(kafka_svc, app_config, client)
         state.add_event("info", f"Kafka SSL endpoint: {ssl_host}:{ssl_port}")
 
         connector_configs = build_discovered_connectors(
