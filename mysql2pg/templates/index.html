@@ -115,7 +115,10 @@
         <section id="tab-connectors" class="hidden">
             <div class="flex items-center justify-between mb-4">
                 <h2 class="text-base font-semibold">Deployed Connectors</h2>
-                <button onclick="fetchStatus()" class="btn text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700">Refresh</button>
+                <div class="flex gap-2">
+                    <button onclick="restartFailed()" class="btn text-xs px-3 py-1.5 rounded-lg bg-yellow-600 hover:bg-yellow-700">Restart Failed</button>
+                    <button onclick="fetchStatus()" class="btn text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700">Refresh</button>
+                </div>
             </div>
             <div id="connectors-table" class="card overflow-hidden">
                 <div class="p-8 text-center text-gray-500 text-sm">Loading connector status...</div>
@@ -237,12 +240,24 @@ async function fetchStatus() {
         const running = connectors.filter(c => c.state === 'RUNNING').length;
         const total = connectors.length;
 
+        if (data.kafka_connect_disabled) {
+            document.getElementById('stat-connectors').textContent = '--';
+            document.getElementById('stat-connectors-detail').textContent = 'Kafka Connect disabled';
+            document.getElementById('stat-health').textContent = 'Setup needed';
+            document.getElementById('stat-health').className = 'text-2xl font-bold text-yellow-400';
+            document.getElementById('stat-health-detail').textContent = 'Click Setup to enable Kafka Connect';
+            document.getElementById('connectors-table').innerHTML =
+                `<div class="p-8 text-center text-gray-500 text-sm">${esc(data.message)}</div>`;
+            log(data.message, 'warn');
+            return;
+        }
+
         document.getElementById('stat-connectors').textContent = total;
         document.getElementById('stat-connectors-detail').textContent = `${running} running`;
 
         if (connectors.length === 0) {
             document.getElementById('connectors-table').innerHTML =
-                '<div class="p-8 text-center text-gray-500 text-sm">No connectors deployed.</div>';
+                '<div class="p-8 text-center text-gray-500 text-sm">No connectors deployed. Use the <a href="/migrate" class="text-blue-400">Migration Wizard</a> to get started.</div>';
             return;
         }
 
@@ -395,6 +410,22 @@ async function runTeardown() {
         log(`Teardown done: ${data.deleted_count} deleted, ${data.failed_count} failed`, data.failed_count > 0 ? 'warn' : 'success');
         toast(`Deleted ${data.deleted_count} connector(s)`, 'success');
         fetchStatus();
+    } catch {}
+}
+
+async function restartFailed() {
+    if (!selectedService) { toast('Select a Kafka service first', 'warn'); return; }
+    log('Restarting failed tasks...', 'info');
+    try {
+        const data = await api('/api/restart-failed', { method: 'POST', body: JSON.stringify({service: selectedService}) });
+        if (data.restarted_count > 0) {
+            log(`Restarted ${data.restarted_count} connector(s): ${data.restarted.join(', ')}`, 'success');
+            toast(`Restarted ${data.restarted_count} failed connector(s)`, 'success');
+        } else {
+            log('No failed tasks found', 'info');
+            toast('No failed tasks to restart', 'info');
+        }
+        setTimeout(fetchStatus, 2000);
     } catch {}
 }
 

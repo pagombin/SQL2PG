@@ -154,7 +154,17 @@ def status():
         if not kafka_svc:
             return jsonify({"connectors": [], "message": "No Kafka service selected"})
 
-        result = client.list_connectors(kafka_svc)
+        try:
+            result = client.list_connectors(kafka_svc)
+        except AivenAPIError as e:
+            if e.status_code == 403:
+                return jsonify({
+                    "connectors": [],
+                    "kafka_connect_disabled": True,
+                    "message": f"Kafka Connect is not enabled on '{kafka_svc}'. Click Setup to enable it.",
+                })
+            raise
+
         connectors = result.get("connectors", [])
 
         statuses = []
@@ -357,7 +367,8 @@ def pause_connector(name: str):
     try:
         config = _get_config()
         client = _get_client()
-        client.pause_connector(config.kafka.service_name, name)
+        kafka_svc = _get_kafka_service(config)
+        client.pause_connector(kafka_svc, name)
         return jsonify({"message": f"Connector '{name}' paused"})
     except AivenAPIError as e:
         return jsonify({"error": str(e)}), 502
@@ -368,7 +379,8 @@ def resume_connector(name: str):
     try:
         config = _get_config()
         client = _get_client()
-        client.resume_connector(config.kafka.service_name, name)
+        kafka_svc = _get_kafka_service(config)
+        client.resume_connector(kafka_svc, name)
         return jsonify({"message": f"Connector '{name}' resumed"})
     except AivenAPIError as e:
         return jsonify({"error": str(e)}), 502
@@ -379,10 +391,52 @@ def restart_connector(name: str):
     try:
         config = _get_config()
         client = _get_client()
-        client.restart_connector(config.kafka.service_name, name)
+        kafka_svc = _get_kafka_service(config)
+        client.restart_connector(kafka_svc, name)
         return jsonify({"message": f"Connector '{name}' restarted"})
     except AivenAPIError as e:
         return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/restart-failed", methods=["POST"])
+def restart_failed_tasks():
+    """Restart all connectors that have FAILED tasks."""
+    try:
+        config = _get_config()
+        client = _get_client()
+        body = request.get_json(silent=True) or {}
+        kafka_svc = body.get("service") or _get_kafka_service(config)
+        if not kafka_svc:
+            return jsonify({"error": "No Kafka service specified"}), 400
+
+        result = client.list_connectors(kafka_svc)
+        connectors = result.get("connectors", [])
+
+        restarted = []
+        failed = []
+        for conn_info in connectors:
+            name = conn_info.get("name", "")
+            if not name:
+                continue
+            try:
+                status_resp = client.get_connector_status(kafka_svc, name)
+                tasks = status_resp.get("status", {}).get("tasks", [])
+                has_failed = any(t.get("state") == "FAILED" for t in tasks)
+                if has_failed:
+                    client.restart_connector(kafka_svc, name)
+                    restarted.append(name)
+            except AivenAPIError as e:
+                failed.append({"name": name, "error": str(e)})
+
+        return jsonify({
+            "restarted": restarted,
+            "failed": failed,
+            "restarted_count": len(restarted),
+        })
+    except AivenAPIError as e:
+        return jsonify({"error": str(e), "status_code": e.status_code}), 502
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── API: Config Reload ────────────────────────────────────────────────
@@ -415,6 +469,7 @@ def api_kafka_services():
 # ══════════════════════════════════════════════════════════════════════
 
 from .migration import (
+    check_schema_drift,
     create_migration,
     delete_migration,
     get_live_comparison,
@@ -712,6 +767,30 @@ def api_complete_migration(mid: str):
         return jsonify({"error": "Migration not found"}), 404
     state = step_complete(state)
     return jsonify(state.to_dict())
+
+
+# ── Schema Drift Detection ───────────────────────────────────────────
+
+@app.route("/api/migrations/<mid>/schema-drift", methods=["POST"])
+def api_schema_drift(mid: str):
+    state = load_state(mid)
+    if not state:
+        return jsonify({"error": "Migration not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    if body.get("mysql_password"):
+        state.mysql_password = body["mysql_password"]
+    if body.get("pg_password"):
+        state.pg_password = body["pg_password"]
+
+    if not state.mysql_password or not state.pg_password:
+        return jsonify({"error": "Passwords required"}), 400
+
+    try:
+        result = check_schema_drift(state)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Live Data Comparison ─────────────────────────────────────────────
