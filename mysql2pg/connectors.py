@@ -105,7 +105,8 @@ def _build_sink_base_config(
 ) -> dict:
     """Build the common JDBC sink connector configuration."""
     connection_url = (
-        f"jdbc:postgresql://{pg.host}:{pg.port}/{pg.database}?sslmode=require"
+        f"jdbc:postgresql://{pg.host}:{pg.port}/{pg.database}"
+        f"?sslmode=require&stringtype=unspecified"
     )
 
     route_replacement = "$1" if table_name_strategy == "as_is" else "$1_$2"
@@ -338,7 +339,7 @@ def build_discovered_connectors(
             f"{topic_prefix}.{src_db}.{t.name}" for t in tables
         )
 
-        connection_url = f"jdbc:postgresql://{pg_host}:{pg_port}/{tgt_db}?sslmode=require"
+        connection_url = f"jdbc:postgresql://{pg_host}:{pg_port}/{tgt_db}?sslmode=require&stringtype=unspecified"
 
         sink_config: dict = {
             "name": f"jdbc-sink-{_sanitize_name(src_db)}-to-{_sanitize_name(tgt_db)}",
