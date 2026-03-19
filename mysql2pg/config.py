@@ -53,9 +53,9 @@ class PostgreSQLTarget:
 @dataclass
 class AppConfig:
     aiven: AivenConfig
-    kafka: KafkaConfig
-    mysql_sources: list[MySQLSource]
-    postgresql_target: PostgreSQLTarget
+    kafka: KafkaConfig | None = None
+    mysql_sources: list[MySQLSource] = field(default_factory=list)
+    postgresql_target: PostgreSQLTarget | None = None
     table_name_strategy: str = "as_is"
 
 
@@ -109,25 +109,34 @@ def load_config(path: str | Path) -> AppConfig:
         project=_resolve_value(raw["aiven"]["project"]),
     )
 
-    kafka_raw = raw["kafka"]
-    kafka = KafkaConfig(
-        service_name=kafka_raw["service_name"],
-        ssl_host=_resolve_value(kafka_raw["ssl_host"]) if "ssl_host" in kafka_raw else "",
-        ssl_port=int(kafka_raw["ssl_port"]) if "ssl_port" in kafka_raw else 0,
-    )
+    kafka = None
+    if "kafka" in raw and raw["kafka"]:
+        kafka_raw = raw["kafka"]
+        kafka = KafkaConfig(
+            service_name=kafka_raw.get("service_name", ""),
+            ssl_host=_resolve_value(kafka_raw["ssl_host"]) if "ssl_host" in kafka_raw else "",
+            ssl_port=int(kafka_raw["ssl_port"]) if "ssl_port" in kafka_raw else 0,
+        )
 
-    mysql_sources = [_parse_mysql_source(src) for src in raw["mysql_sources"]]
-    _validate_unique_server_ids(mysql_sources)
-    _validate_unique_source_names(mysql_sources)
+    mysql_sources: list[MySQLSource] = []
+    if "mysql_sources" in raw and raw["mysql_sources"]:
+        mysql_sources = [_parse_mysql_source(src) for src in raw["mysql_sources"]]
+        _validate_unique_server_ids(mysql_sources)
+        _validate_unique_source_names(mysql_sources)
 
-    pg = raw["postgresql_target"]
-    postgresql_target = PostgreSQLTarget(
-        host=_resolve_value(pg["host"]),
-        port=int(pg.get("port", 25060)),
-        username=_resolve_value(pg["username"]),
-        password=_resolve_value(pg["password"]),
-        database=pg.get("database", "defaultdb"),
-    )
+    postgresql_target = None
+    if "postgresql_target" in raw and raw["postgresql_target"]:
+        pg = raw["postgresql_target"]
+        for key in ["host", "username", "password"]:
+            if key not in pg:
+                raise ValueError(f"Missing required postgresql_target config: '{key}'")
+        postgresql_target = PostgreSQLTarget(
+            host=_resolve_value(pg["host"]),
+            port=int(pg.get("port", 25060)),
+            username=_resolve_value(pg["username"]),
+            password=_resolve_value(pg["password"]),
+            database=pg.get("database", "defaultdb"),
+        )
 
     strategy = raw.get("table_name_strategy", "as_is")
     if strategy not in ("as_is", "prefixed"):
@@ -144,24 +153,12 @@ def load_config(path: str | Path) -> AppConfig:
 
 def _validate_raw_config(raw: dict) -> None:
     """Validate top-level structure of raw config."""
-    required_sections = ["aiven", "kafka", "mysql_sources", "postgresql_target"]
-    for section in required_sections:
-        if section not in raw:
-            raise ValueError(f"Missing required config section: '{section}'")
-
-    if not raw.get("mysql_sources"):
-        raise ValueError("At least one MySQL source must be configured")
+    if "aiven" not in raw:
+        raise ValueError("Missing required config section: 'aiven'")
 
     for key in ["token", "project"]:
         if key not in raw["aiven"]:
             raise ValueError(f"Missing required aiven config: '{key}'")
-
-    if "service_name" not in raw["kafka"]:
-        raise ValueError("Missing required kafka config: 'service_name'")
-
-    for key in ["host", "username", "password"]:
-        if key not in raw["postgresql_target"]:
-            raise ValueError(f"Missing required postgresql_target config: '{key}'")
 
 
 def _validate_unique_server_ids(sources: list[MySQLSource]) -> None:

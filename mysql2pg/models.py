@@ -361,6 +361,7 @@ class MigrationState:
     updated_at: str = ""
 
     # Connection info (credentials stored transiently, not persisted to disk)
+    kafka_service_name: str = ""
     mysql_host: str = ""
     mysql_port: int = 3306
     mysql_username: str = ""

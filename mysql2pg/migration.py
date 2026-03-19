@@ -123,6 +123,17 @@ def _get_effective_mappings(state: MigrationState) -> list[dict]:
 
 # ── Step Executors ───────────────────────────────────────────────────
 
+def step_select_kafka_service(
+    state: MigrationState,
+    kafka_service_name: str,
+) -> MigrationState:
+    """User selects which Kafka service to use for this migration."""
+    state.kafka_service_name = kafka_service_name
+    state.add_event("info", f"Selected Kafka service: {kafka_service_name}")
+    save_state(state)
+    return state
+
+
 def step_discover_source(
     state: MigrationState,
     host: str, port: int, username: str, password: str,
@@ -260,9 +271,12 @@ def step_validate_kafka(
 
     try:
         client = AivenClient(app_config.aiven.token, app_config.aiven.project)
+        kafka_svc = state.kafka_service_name
+        if not kafka_svc and app_config.kafka:
+            kafka_svc = app_config.kafka.service_name
         cluster = rebuild_cluster_from_summary(state.source_cluster)
         report = validate_kafka_capacity(
-            client, app_config.kafka.service_name,
+            client, kafka_svc,
             cluster, state.selected_databases,
         )
         state.sizing_report = sizing_report_to_dict(report)
@@ -403,7 +417,9 @@ def step_deploy_connectors(
 
     try:
         client = AivenClient(app_config.aiven.token, app_config.aiven.project)
-        kafka_svc = app_config.kafka.service_name
+        kafka_svc = state.kafka_service_name
+        if not kafka_svc and app_config.kafka:
+            kafka_svc = app_config.kafka.service_name
 
         # Enable Kafka Connect + auto-create topics
         try:

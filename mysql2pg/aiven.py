@@ -86,6 +86,21 @@ class AivenClient:
         """Update service user configuration."""
         return self._request("PUT", f"/service/{service_name}", {"user_config": user_config})
 
+    def list_kafka_services(self) -> list[dict]:
+        """List all Kafka services in the project."""
+        data = self._request("GET", "/service")
+        services = data.get("services", [])
+        return [
+            {
+                "name": s["service_name"],
+                "plan": s.get("plan", ""),
+                "state": s.get("state", ""),
+                "cloud": s.get("cloud_name", ""),
+            }
+            for s in services
+            if s.get("service_type") == "kafka"
+        ]
+
     # ── Kafka Connect ────────────────────────────────────────────────
 
     def enable_kafka_connect(self, service_name: str) -> dict:
