@@ -86,45 +86,39 @@ download_files() {
     banner "Downloading MySQL2PG"
 
     local CLONE_URL="https://github.com/${REPO}.git"
+    mkdir -p "${INSTALL_DIR}"
 
-    if [[ -d "${INSTALL_DIR}/.git" ]]; then
-        log "Existing installation found, pulling updates..."
+    if [[ ! -d "${INSTALL_DIR}/.git" ]]; then
+        log "Initializing git repository..."
         cd "${INSTALL_DIR}"
-        git fetch origin "${BRANCH}" --quiet
-        local LOCAL_REV
-        LOCAL_REV=$(git rev-parse HEAD 2>/dev/null || echo "none")
-        git checkout "${BRANCH}" --quiet 2>/dev/null || git checkout -b "${BRANCH}" "origin/${BRANCH}" --quiet
-        git reset --hard "origin/${BRANCH}" --quiet
-        local REMOTE_REV
-        REMOTE_REV=$(git rev-parse HEAD)
-        if [[ "${LOCAL_REV}" == "${REMOTE_REV}" ]]; then
-            log "  Already up to date."
-        else
-            log "  Updated to ${REMOTE_REV:0:8}"
-        fi
+        git init --quiet
+        git remote add origin "${CLONE_URL}" 2>/dev/null || git remote set-url origin "${CLONE_URL}"
         cd - > /dev/null
-    else
-        log "Cloning ${CLONE_URL} (branch: ${BRANCH})..."
-        local PARENT_DIR
-        PARENT_DIR=$(dirname "${INSTALL_DIR}")
-        mkdir -p "${PARENT_DIR}"
-        # Preserve config.yaml if it exists from a non-git install
-        local SAVED_CONFIG=""
-        if [[ -f "${INSTALL_DIR}/config.yaml" ]]; then
-            SAVED_CONFIG=$(mktemp)
-            cp "${INSTALL_DIR}/config.yaml" "${SAVED_CONFIG}"
-        fi
-        rm -rf "${INSTALL_DIR}"
-        git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" "${INSTALL_DIR}" --quiet
-        if [[ -n "${SAVED_CONFIG}" ]]; then
-            cp "${SAVED_CONFIG}" "${INSTALL_DIR}/config.yaml"
-            rm -f "${SAVED_CONFIG}"
-            log "  Restored existing config.yaml"
-        fi
-        log "  Clone complete."
     fi
 
-    mkdir -p "${INSTALL_DIR}/mysql2pg/templates"
+    cd "${INSTALL_DIR}"
+
+    local LOCAL_REV
+    LOCAL_REV=$(git rev-parse HEAD 2>/dev/null || echo "none")
+
+    log "Fetching latest from ${BRANCH}..."
+    git fetch --depth 1 origin "${BRANCH}" --quiet
+
+    git checkout "${BRANCH}" --quiet 2>/dev/null || git checkout -b "${BRANCH}" "origin/${BRANCH}" --quiet
+
+    # Reset tracked files to match remote; untracked files (config.yaml,
+    # certs/, migrations/, venv/) are left untouched.
+    git reset --hard "origin/${BRANCH}" --quiet
+
+    local REMOTE_REV
+    REMOTE_REV=$(git rev-parse HEAD)
+    if [[ "${LOCAL_REV}" == "${REMOTE_REV}" ]]; then
+        log "  Already up to date (${REMOTE_REV:0:8})."
+    else
+        log "  Updated to ${REMOTE_REV:0:8}"
+    fi
+
+    cd - > /dev/null
 }
 
 setup_venv() {
