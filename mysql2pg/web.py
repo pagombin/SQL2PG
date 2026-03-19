@@ -691,8 +691,13 @@ def run_server(
     port: int = 8443,
     cert_dir: str = "/opt/mysql2pg/certs",
     debug: bool = False,
+    workers: int = 2,
 ) -> None:
-    """Start the HTTPS server with self-signed certificates."""
+    """Start the HTTPS server with self-signed certificates.
+
+    Uses gunicorn for production serving.  Falls back to Flask's built-in
+    server when gunicorn is unavailable (e.g. during local development).
+    """
     global _config_path
     _config_path = config_path
 
@@ -705,16 +710,47 @@ def run_server(
         cert_path, key_path = get_cert_paths(cert_dir)
         print(f"Using existing certificates from {cert_dir}")
 
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ssl_context.load_cert_chain(str(cert_path), str(key_path))
-
     print(f"\nMySQL2PG Web UI: https://{host}:{port}")
     print(f"API Health:      https://{host}:{port}/api/health")
     print(f"Config file:     {config_path}\n")
 
-    app.run(
-        host=host,
-        port=port,
-        ssl_context=ssl_context,
-        debug=debug,
-    )
+    if debug:
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_context.load_cert_chain(str(cert_path), str(key_path))
+        app.run(host=host, port=port, ssl_context=ssl_context, debug=True)
+        return
+
+    try:
+        from gunicorn.app.base import BaseApplication
+
+        class _GunicornApp(BaseApplication):
+            def __init__(self, flask_app, options=None):
+                self.flask_app = flask_app
+                self.options = options or {}
+                super().__init__()
+
+            def load_config(self):
+                for key, value in self.options.items():
+                    if key in self.cfg.settings and value is not None:
+                        self.cfg.set(key.lower(), value)
+
+            def load(self):
+                return self.flask_app
+
+        options = {
+            "bind": f"{host}:{port}",
+            "workers": workers,
+            "certfile": str(cert_path),
+            "keyfile": str(key_path),
+            "accesslog": "-",
+            "errorlog": "-",
+            "timeout": 120,
+        }
+        print(f"Starting gunicorn with {workers} worker(s)...")
+        _GunicornApp(app, options).run()
+
+    except ImportError:
+        print("gunicorn not installed, falling back to Flask dev server")
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_context.load_cert_chain(str(cert_path), str(key_path))
+        app.run(host=host, port=port, ssl_context=ssl_context, debug=False)
