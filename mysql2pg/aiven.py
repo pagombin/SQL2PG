@@ -87,19 +87,37 @@ class AivenClient:
         return self._request("PUT", f"/service/{service_name}", {"user_config": user_config})
 
     def list_kafka_services(self) -> list[dict]:
-        """List all Kafka services in the project."""
+        """List all Kafka services in the project with Connect eligibility."""
         data = self._request("GET", "/service")
         services = data.get("services", [])
-        return [
-            {
+        result = []
+        for s in services:
+            if s.get("service_type") != "kafka":
+                continue
+            features = s.get("features", {})
+            kafka_connect_enabled = features.get("kafka_connect", False)
+
+            # Determine if the plan supports Kafka Connect.  Plans that
+            # include "hobbyist" or "startup" generally do not; business
+            # and premium plans do.  We also inspect the feature flags
+            # and the kafka_connect_service_integration feature.
+            plan = s.get("plan", "")
+            plan_lower = plan.lower()
+            connect_supported = True
+            if any(p in plan_lower for p in ("hobbyist", "startup")):
+                connect_supported = False
+            if features.get("kafka_connect_service_integration") is False and not kafka_connect_enabled:
+                connect_supported = False
+
+            result.append({
                 "name": s["service_name"],
-                "plan": s.get("plan", ""),
+                "plan": plan,
                 "state": s.get("state", ""),
                 "cloud": s.get("cloud_name", ""),
-            }
-            for s in services
-            if s.get("service_type") == "kafka"
-        ]
+                "kafka_connect_enabled": kafka_connect_enabled,
+                "kafka_connect_supported": connect_supported,
+            })
+        return result
 
     # ── Kafka Connect ────────────────────────────────────────────────
 
