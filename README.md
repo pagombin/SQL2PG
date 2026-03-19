@@ -1,8 +1,8 @@
 # MySQL2PG
 
-A full-featured MySQL-to-PostgreSQL migration application powered by Kafka CDC (Change Data Capture). Runs on a DigitalOcean Droplet with self-signed HTTPS on port 8443.
+Automated MySQL-to-PostgreSQL migration powered by Kafka CDC (Change Data Capture). Runs on a DigitalOcean Droplet with self-signed HTTPS on port 8443.
 
-The application provides a guided migration wizard that automatically **discovers** your MySQL schemas (databases, tables, columns, indexes, foreign keys, triggers, views, routines), **analyzes** type compatibility, **generates** PostgreSQL DDL, **validates** Kafka cluster capacity, **deploys** Debezium CDC connectors, and provides **live data comparison** between source and target throughout the migration.
+Everything is configured through the web UI -- the only file you edit is `config.yaml` to set your Aiven API token and project name. The guided migration wizard handles discovery, compatibility analysis, schema creation, connector deployment, and live monitoring.
 
 ## Architecture
 
@@ -34,7 +34,7 @@ The application provides a guided migration wizard that automatically **discover
                                                   └──────────────────────┘
 ```
 
-## Quick Install (DigitalOcean Droplet)
+## Quick Install
 
 One command installs everything on a fresh Ubuntu/Debian droplet:
 
@@ -46,10 +46,18 @@ This installs Python, dependencies, generates self-signed TLS certificates, and 
 
 After installation:
 
-1. Edit the configuration file with your Aiven/Kafka credentials:
+1. Edit the configuration file with your Aiven credentials:
 
 ```bash
 nano /opt/mysql2pg/config.yaml
+```
+
+You only need two values:
+
+```yaml
+aiven:
+  token: "your-aiven-api-token"
+  project: "do-user-xxxxxxx-0"
 ```
 
 2. Restart the service:
@@ -63,13 +71,13 @@ systemctl restart mysql2pg
 
 ### Updating
 
-Re-run the same command to check for updates:
+Re-run the same install command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pagombin/SQL2PG/main/install.sh | bash
 ```
 
-The script downloads only changed files, updates dependencies if needed, preserves your existing `config.yaml` and TLS certificates, and restarts the service.
+The installer is fully idempotent. It updates only the application code while preserving your `config.yaml`, TLS certificates, migration state, and Python environment. No data is lost.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -78,158 +86,126 @@ The script downloads only changed files, updates dependencies if needed, preserv
 
 ## Migration Wizard
 
-The core of the application is a 9-step guided migration wizard accessible at `/migrate`. It handles the full lifecycle from discovery to ongoing CDC streaming.
+The wizard at `/migrate` handles the full migration lifecycle in 10 steps. On page refresh, it resumes any in-progress migration at the correct step.
 
-### Step 1: Source Discovery
+### Step 1: Kafka Service
 
-Connect to your MySQL cluster with credentials. The application introspects `INFORMATION_SCHEMA` to discover:
+Select which Kafka cluster to use for CDC replication. The wizard lists all Kafka services in your Aiven project. On selection, it automatically:
 
-- All user databases (system databases are filtered out)
-- Tables with row counts, data sizes, engine types, auto-increment values
-- Columns with full type information (data type, UNSIGNED, ZEROFILL, character set, collation, defaults, ON UPDATE, generation expressions)
-- Indexes (primary keys, unique, BTREE, FULLTEXT, SPATIAL)
-- Foreign key relationships (columns, referenced tables, ON DELETE/UPDATE rules)
-- Triggers, views, and stored routines
-- MySQL server version and SQL mode
+- Enables Kafka Connect if not already active
+- Enables auto-create topics
+- Validates connectivity
 
-### Step 2: Database Selection
+### Step 2: Source Discovery
 
-Choose which databases to migrate. The wizard shows each database with table count, total rows, total size, and flags tables without primary keys (which require special handling for CDC).
+Connect to your MySQL cluster. The application introspects `INFORMATION_SCHEMA` to discover all databases, tables, columns (with full type metadata), indexes, foreign keys, triggers, views, and routines.
 
-### Step 3: Target Discovery
+### Step 3: Database Selection
 
-Connect to your PostgreSQL cluster. The application discovers:
+Choose which databases to migrate. Tables without primary keys are flagged (Debezium CDC requires a key for upsert mode).
 
-- Existing databases with owners, encodings, and sizes
-- Available extensions (PostGIS availability is checked for spatial type support)
-- User permissions (can the user create databases?)
+### Step 4: Target Discovery
 
-### Step 4: Database Mapping
+Connect to your PostgreSQL cluster. The application discovers existing databases, extensions (PostGIS availability), and user permissions.
 
-Map each selected MySQL database to a PostgreSQL target database. You can select an existing database or have the application create a new one.
+### Step 5: Database Mapping
 
-### Step 5: Compatibility Analysis
+Map each MySQL database to a PostgreSQL target database. Select an existing database or have the wizard create a new one.
 
-Every column across all selected tables is run through the type mapping engine. The report classifies each mapping as:
+### Step 6: Compatibility Analysis
 
-- **BLOCK** -- Migration cannot proceed. The column type has no PostgreSQL equivalent (e.g., virtual generated columns, spatial types without PostGIS).
-- **WARN** -- Conversion is possible but involves behavioral changes (e.g., INT UNSIGNED widened to BIGINT, SET mapped to TEXT array, YEAR mapped to SMALLINT).
-- **INFO** -- Direct automatic mapping, no action needed.
-
-#### Type Mapping Summary
+Every column is run through the type mapping engine and classified as BLOCK, WARN, or INFO:
 
 | MySQL | PostgreSQL | Notes |
 |-------|-----------|-------|
 | `TINYINT(1)` | `BOOLEAN` | Semantic conversion |
-| `TINYINT` | `SMALLINT` | |
-| `INT` | `INTEGER` | |
-| `INT UNSIGNED` | `BIGINT` | Widened to fit unsigned range |
+| `INT UNSIGNED` | `BIGINT` | Widened for unsigned range |
 | `BIGINT UNSIGNED` | `NUMERIC(20,0)` | No native unsigned 64-bit in PG |
 | `DECIMAL(p,s)` | `NUMERIC(p,s)` | |
-| `FLOAT` / `DOUBLE` | `REAL` / `DOUBLE PRECISION` | |
 | `VARCHAR(n)` | `VARCHAR(n)` | |
 | `TEXT` / `LONGTEXT` | `TEXT` | |
 | `BLOB` / `LONGBLOB` | `BYTEA` | |
 | `ENUM(...)` | Custom `CREATE TYPE` | Auto-generated per column |
-| `SET(...)` | `TEXT[]` | Behavioral difference |
-| `JSON` | `JSONB` | Indexed by default |
+| `SET(...)` | `TEXT` | Stored as comma-separated string |
+| `JSON` | `JSONB` | |
 | `DATETIME` | `TIMESTAMP WITHOUT TIME ZONE` | |
 | `TIMESTAMP` | `TIMESTAMP WITH TIME ZONE` | |
+| `BIT(1)` | `BOOLEAN` | Debezium emits as boolean |
+| `BIT(n)` | `BYTEA` | Debezium emits as byte array |
 | `AUTO_INCREMENT` | `GENERATED ALWAYS AS IDENTITY` | |
 | `ON UPDATE CURRENT_TIMESTAMP` | Trigger function | Auto-generated |
 | Spatial types | PostGIS geometry | Blocked if PostGIS unavailable |
-| `GENERATED ... VIRTUAL` | -- | Blocked (PG only supports STORED) |
 
-Additional checks:
-- Tables without primary keys are flagged (Debezium CDC requires a key for upsert mode)
-- Cross-database foreign keys are blocked (PostgreSQL databases are isolated)
-- Stored routines are flagged as requiring manual PL/pgSQL conversion
-- Views are noted as not migrated by CDC
+### Step 7: Kafka Sizing
 
-### Step 6: Kafka Sizing Validation
+Validates Kafka cluster capacity against the migration workload (topics, throughput, storage, connector tasks). Shows upgrade recommendations if undersized.
 
-The application queries the Aiven API for your Kafka cluster's resources and calculates:
+### Step 8: Schema Creation
 
-- Topics needed (one per table plus schema history)
-- Required throughput based on total data size
-- Estimated migration duration
-- Storage requirements with replication factor
-- Connector task capacity
+Generates and executes PostgreSQL DDL in order: ENUM types, tables (topologically sorted), indexes, trigger functions. Foreign keys are deferred to after data loading.
 
-If the cluster is undersized, specific upgrade recommendations are shown.
+After execution, the wizard **validates** that every expected table exists on the PostgreSQL target before allowing connector deployment.
 
-### Step 7: Schema Creation
+### Step 9: Deploy Connectors
 
-PostgreSQL DDL is generated and executed:
+Deploys a Debezium MySQL source connector and one JDBC sink connector per database. Source connectors include:
 
-1. **ENUM types** -- `CREATE TYPE ... AS ENUM` for all MySQL ENUM columns
-2. **Tables** -- Created in topological order (parents before children based on FK graph). Circular FK dependencies are detected and handled.
-3. **Indexes** -- All non-PK indexes are recreated (prefix indexes converted to expression indexes)
-4. **Trigger functions** -- Auto-generated for `ON UPDATE CURRENT_TIMESTAMP` behavior
-5. **Foreign keys** -- Deferred to after data loading to avoid constraint violations during CDC snapshot
+- `decimal.handling.mode=string` for safe DECIMAL round-tripping
+- `time.precision.mode=connect` for standard time types
+- `binary.handling.mode=base64` for JSON-safe binary data
 
-### Step 8: Connector Deployment
+Sink connectors include dead letter queues, error tolerance, and `stringtype=unspecified` for PostgreSQL ENUM compatibility.
 
-The application deploys:
+### Step 10: Monitor
 
-- **One Debezium MySQL source connector** covering all selected databases with `message.key.columns` set for PK-less tables
-- **One JDBC sink connector per database** with discovery-driven `pk.fields`, explicit topic lists, `auto.evolve` for schema changes, and dead letter queue configuration
+Real-time monitoring dashboard:
 
-### Step 9: Monitor and Live Data Comparison
-
-Real-time monitoring dashboard showing:
-
-- **Row count comparison** -- Source vs target for every table, with delta and sync percentage
-- **Per-database summaries** -- Aggregated counts and sync status
-- **Sample data comparison** -- Side-by-side view of first N rows from source and target (ordered by PK)
-- **Auto-refresh** -- Configurable 10-second polling
-- **FK constraint application** -- Apply deferred foreign key constraints after initial data load is complete
-- **Migration completion** -- Mark migration as done when fully synced
+- **Row count comparison** -- source vs target for every table with delta and sync percentage
+- **Sample data comparison** -- side-by-side view of rows from source and target
+- **Connector status** -- live state of all connectors with per-connector Pause, Resume, Restart, and Delete actions
+- **Failure traces** -- full Java stack traces displayed inline when connector tasks fail
+- **Schema drift detection** -- re-discovers MySQL schema and compares against PostgreSQL to find new tables or column changes since migration started
+- **Auto-refresh** -- configurable 10-second polling
+- **FK constraint application** -- apply deferred foreign keys after initial data load
+- **Delete all connectors** -- full teardown from the wizard
 
 ## Operations Dashboard
 
-The main dashboard at `/` provides quick actions for the underlying connector infrastructure:
+The main dashboard at `/` provides an operational overview independent of any specific migration:
 
-- **Setup** -- Enable Kafka Connect and auto-create topics
-- **Deploy** -- Deploy connectors from config.yaml
-- **Verify** -- Check Kafka cluster readiness
-- **Teardown** -- Delete all connectors
-- **Connectors tab** -- Live status with per-connector pause/resume/restart
-- **Plan tab** -- Preview connector deployment plan
-- **Configuration tab** -- View current config summary
+- **Kafka service selector** -- dropdown in the header to choose which Kafka cluster to operate on
+- **Setup** -- enable Kafka Connect and auto-create topics on the selected service
+- **Verify** -- check Kafka cluster readiness
+- **Teardown** -- delete all connectors on the selected service
+- **Connectors tab** -- live status with per-connector Pause, Resume, Restart, Delete, and inline failure traces
+- **Restart Failed** -- one-click restart of all failed connector tasks
+- **Migrations tab** -- list all migrations with phase, source, databases, and timestamps
 
 ## Prerequisites
 
 - Python 3.10+
 - DigitalOcean account with Managed MySQL, PostgreSQL, and Kafka clusters
-- Aiven API token (from Atlantis or Aiven console)
-- Kafka cluster SSL connection details (hostname and port from the **SSL** tab, not SASL)
+- Aiven API token (from the Aiven console or Atlantis)
 
 ## Configuration
 
-The `config.yaml` file provides Aiven/Kafka credentials used by both the dashboard and migration wizard. MySQL and PostgreSQL credentials for migrations are entered at runtime through the wizard UI (not stored in config).
+`config.yaml` only requires Aiven API credentials. Everything else is configured through the web UI.
 
-```bash
-cp config.yaml.example config.yaml
+```yaml
+aiven:
+  token: "your-aiven-api-token"
+  project: "do-user-xxxxxxx-0"
 ```
 
-| Section | Field | Description |
-|---------|-------|-------------|
-| `aiven.token` | | Aiven API bearer token |
-| `aiven.project` | | Aiven project name (e.g., `do-user-xxxxxxx-0`) |
-| `kafka.service_name` | | Kafka cluster name in DigitalOcean |
-| `kafka.ssl_host` | | Kafka SSL hostname (Connection Details > SSL tab) |
-| `kafka.ssl_port` | | Kafka SSL port |
-| `mysql_sources[]` | | MySQL sources for the config-driven dashboard (not required for wizard) |
-| `postgresql_target` | | PostgreSQL target for the config-driven dashboard (not required for wizard) |
-| `table_name_strategy` | | `as_is` or `prefixed` (config-driven mode only) |
-
-Config values support `${ENV_VAR}` substitution:
+Values support `${ENV_VAR}` substitution:
 
 ```yaml
 aiven:
   token: "${AIVEN_TOKEN}"
+  project: "${AIVEN_PROJECT}"
 ```
+
+For advanced CLI usage, optional sections can be added for `kafka`, `mysql_sources`, and `postgresql_target`. See `config.yaml.example` for details.
 
 ## REST API
 
@@ -239,16 +215,16 @@ aiven:
 |----------|--------|-------------|
 | `/api/health` | GET | Health check |
 | `/api/info` | GET | Configuration summary |
-| `/api/plan` | GET | Connector deployment plan |
-| `/api/status` | GET | Deployed connector status |
-| `/api/setup` | POST | Enable Kafka Connect |
-| `/api/deploy` | POST | Deploy connectors |
+| `/api/status` | GET | Connector status (accepts `?service=`) |
+| `/api/kafka-services` | GET | List Kafka services in Aiven project |
+| `/api/setup` | POST | Enable Kafka Connect on a service |
 | `/api/teardown` | POST | Delete connectors |
 | `/api/verify` | GET | Verify Kafka readiness |
+| `/api/restart-failed` | POST | Restart all failed connector tasks |
+| `/api/connector/<name>` | DELETE | Delete a single connector |
 | `/api/connector/<name>/pause` | POST | Pause a connector |
 | `/api/connector/<name>/resume` | POST | Resume a connector |
 | `/api/connector/<name>/restart` | POST | Restart a connector |
-| `/api/config/reload` | POST | Reload config from disk |
 
 ### Migration API
 
@@ -258,10 +234,11 @@ aiven:
 | `/api/migrations` | POST | Create a new migration |
 | `/api/migrations/<id>` | GET | Get migration state |
 | `/api/migrations/<id>` | DELETE | Delete a migration |
+| `/api/migrations/<id>/select-kafka` | POST | Select Kafka service |
 | `/api/migrations/<id>/discover-source` | POST | Discover MySQL schema |
-| `/api/migrations/<id>/select-databases` | POST | Select databases to migrate |
+| `/api/migrations/<id>/select-databases` | POST | Select databases |
 | `/api/migrations/<id>/discover-target` | POST | Discover PostgreSQL target |
-| `/api/migrations/<id>/database-mappings` | POST | Set source-to-target DB mappings |
+| `/api/migrations/<id>/database-mappings` | POST | Set DB mappings |
 | `/api/migrations/<id>/analyze` | POST | Run compatibility analysis |
 | `/api/migrations/<id>/validate-kafka` | POST | Validate Kafka capacity |
 | `/api/migrations/<id>/create-schema` | POST | Generate and execute DDL |
@@ -269,25 +246,25 @@ aiven:
 | `/api/migrations/<id>/apply-constraints` | POST | Apply deferred FK constraints |
 | `/api/migrations/<id>/verify` | POST | Run verification checks |
 | `/api/migrations/<id>/compare` | POST | Live data comparison |
+| `/api/migrations/<id>/schema-drift` | POST | Detect schema changes |
 | `/api/migrations/<id>/start-streaming` | POST | Enter streaming CDC mode |
 | `/api/migrations/<id>/complete` | POST | Mark migration complete |
 
-## CLI Usage
+## CLI
 
-The CLI remains fully functional for scripting and automation:
+The CLI is available for scripting and automation (requires full `config.yaml` with `kafka` and `mysql_sources` sections):
 
 ```bash
-python3 main.py setup       # Enable Kafka Connect & auto-create topics
-python3 main.py plan        # Preview connector deployment plan
-python3 main.py deploy      # Deploy all connectors
-python3 main.py status      # Check connector status
-python3 main.py list        # List all connectors
-python3 main.py verify      # Verify Kafka cluster setup
-python3 main.py test        # Run end-to-end CDC test
-python3 main.py teardown -y # Delete all connectors
-python3 main.py info        # Display configuration summary
-python3 main.py serve       # Start HTTPS web dashboard
-python3 main.py run         # Full pipeline: setup -> deploy -> verify -> test
+python3 main.py --version        # Show version
+python3 main.py setup            # Enable Kafka Connect
+python3 main.py plan             # Preview connector plan
+python3 main.py deploy           # Deploy connectors
+python3 main.py status           # Check connector status
+python3 main.py verify           # Verify Kafka setup
+python3 main.py teardown -y      # Delete all connectors
+python3 main.py serve            # Start HTTPS dashboard
+python3 main.py serve --workers 4  # With 4 gunicorn workers
+python3 main.py serve --debug    # Single-threaded debug mode
 ```
 
 ## Service Management
@@ -300,66 +277,9 @@ systemctl status mysql2pg
 journalctl -u mysql2pg -f
 ```
 
-## Project Structure
-
-```
-├── main.py                          # CLI entry point (includes 'serve' command)
-├── install.sh                       # One-line installer/updater for droplets
-├── mysql2pg.service                 # Systemd unit file
-├── config.yaml.example             # Configuration template
-├── requirements.txt                 # Python dependencies
-├── mysql2pg/
-│   ├── __init__.py
-│   ├── models.py                    # Data models (schema, migration state, comparisons)
-│   ├── discovery.py                 # MySQL + PostgreSQL schema introspection
-│   ├── compatibility.py            # Type mapping engine and compatibility analysis
-│   ├── schema.py                    # PostgreSQL DDL generation
-│   ├── sizing.py                    # Kafka cluster capacity validation
-│   ├── migration.py                 # Migration state machine orchestrator
-│   ├── verification.py             # Post-migration verification and live comparison
-│   ├── connectors.py               # Connector configuration builders (config + discovery)
-│   ├── config.py                    # YAML config loading and validation
-│   ├── aiven.py                     # Aiven API client
-│   ├── testing.py                   # End-to-end CDC functionality test
-│   ├── web.py                       # Flask application (dashboard + migration API)
-│   ├── certs.py                     # Self-signed TLS certificate generation
-│   └── templates/
-│       ├── index.html               # Operations dashboard UI
-│       └── migrate.html             # Migration wizard UI with live comparison
-└── README.md
-```
-
-### Module Responsibilities
-
-| Module | Purpose |
-|--------|---------|
-| `models.py` | 30+ dataclasses for schema representation, migration state (15 phases), compatibility reports, Kafka sizing, and live comparison results |
-| `discovery.py` | Full MySQL `INFORMATION_SCHEMA` introspection (databases, tables, columns, indexes, FKs, triggers, views, routines). PostgreSQL target discovery. FK dependency graph with topological sort and cycle detection. |
-| `compatibility.py` | Maps every MySQL column type to PostgreSQL with BLOCK/WARN/INFO severity. Handles UNSIGNED widening, ENUM->CREATE TYPE, SET->TEXT[], spatial->PostGIS, virtual generated columns. |
-| `schema.py` | Generates PostgreSQL DDL: ENUM types, tables in FK-dependency order, indexes, trigger functions for ON UPDATE CURRENT_TIMESTAMP, deferred FK constraints. |
-| `sizing.py` | Calculates topics, partitions, throughput, storage needs. Compares against Kafka cluster resources via Aiven API. |
-| `migration.py` | State machine with 15+ phases from CREATED to COMPLETED. Persistent state (JSON on disk) survives restarts. Coordinates the full pipeline. |
-| `verification.py` | Row count comparison, schema match verification, FK integrity checks, sample data comparison, full live comparison with per-database aggregation. |
-| `connectors.py` | Builds Debezium source and JDBC sink connector configs. Discovery-driven mode sets `pk.fields`, `message.key.columns`, and DLQ per table. |
-
-## Migration State Lifecycle
-
-```
-CREATED -> DISCOVERING_SOURCE -> SOURCE_DISCOVERED -> DATABASES_SELECTED
-  -> DISCOVERING_TARGET -> TARGET_DISCOVERED -> ANALYZING_COMPATIBILITY
-  -> COMPATIBILITY_REVIEWED -> VALIDATING_KAFKA -> KAFKA_VALIDATED
-  -> CREATING_SCHEMA -> SCHEMA_CREATED -> DEPLOYING_CONNECTORS
-  -> CONNECTORS_RUNNING -> SNAPSHOT_IN_PROGRESS -> SNAPSHOT_COMPLETE
-  -> APPLYING_CONSTRAINTS -> CONSTRAINTS_APPLIED -> VERIFYING -> VERIFIED
-  -> STREAMING -> COMPLETED
-```
-
-Migration state is persisted to `/opt/mysql2pg/migrations/<id>.json` and survives server restarts. Credentials are held in memory only and never written to disk.
-
 ## Security Notes
 
-- The web dashboard uses **self-signed TLS certificates**. Browsers will show a security warning on first visit -- this is expected.
-- `config.yaml` contains Aiven/Kafka credentials and is excluded from git via `.gitignore`. Permissions are set to `600`.
-- MySQL and PostgreSQL passwords entered in the migration wizard are held in memory only and **never persisted to disk**.
+- The web dashboard uses **self-signed TLS certificates**. Browsers will show a security warning on first visit.
+- `config.yaml` contains your Aiven API token and is set to permissions `600`.
+- MySQL and PostgreSQL passwords entered in the wizard are held in memory only and **never written to disk**.
 - The service runs under a dedicated `mysql2pg` system user with no login shell.
-- Consider using a firewall (e.g., `ufw allow 8443/tcp`) to restrict dashboard access.

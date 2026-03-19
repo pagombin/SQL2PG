@@ -571,8 +571,18 @@ def api_select_kafka(mid: str):
         setup_steps = []
 
         if not kafka_connect_enabled:
-            client.enable_kafka_connect(service_name)
-            setup_steps.append("kafka_connect_enabled")
+            try:
+                client.enable_kafka_connect(service_name)
+                setup_steps.append("kafka_connect_enabled")
+            except AivenAPIError as e:
+                if e.status_code == 409:
+                    return jsonify({
+                        "error": (
+                            f"Kafka Connect is not supported on plan '{service_data.get('service', {}).get('plan', 'unknown')}'. "
+                            f"Upgrade to a Business or Premium plan to use Kafka Connect."
+                        )
+                    }), 400
+                raise
 
         try:
             user_config = service_data.get("service", {}).get("user_config", {})
