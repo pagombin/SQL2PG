@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from mysql2pg import __version__
 from mysql2pg.config import load_config, AppConfig
 from mysql2pg.aiven import AivenClient, AivenAPIError
 from mysql2pg.connectors import (
@@ -60,6 +61,7 @@ def _print_connector_table(plans: list[ConnectorPlan]) -> None:
 # ── CLI Group ────────────────────────────────────────────────────────
 
 @click.group()
+@click.version_option(version=__version__, prog_name="mysql2pg")
 @click.option("--config", "-c", default="config.yaml", help="Path to config file")
 @click.pass_context
 def cli(ctx: click.Context, config: str) -> None:
