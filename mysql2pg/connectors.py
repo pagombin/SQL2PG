@@ -135,6 +135,8 @@ def _build_sink_base_config(
         "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
         "transforms.route.regex": route_regex,
         "transforms.route.replacement": route_replacement,
+        "errors.tolerance": "all",
+        "errors.deadletterqueue.context.headers.enable": "true",
     }
 
 
@@ -159,6 +161,7 @@ def build_sink_connectors_for_source(
         base = _build_sink_base_config(pg, table_name_strategy)
         name = _sink_connector_name(source, db)
         base["name"] = name
+        base["errors.deadletterqueue.topic.name"] = f"dlq-{_sanitize_name(source.name)}-{_sanitize_name(db.name)}"
 
         if db.tables:
             topics = ",".join(
