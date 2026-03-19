@@ -168,6 +168,11 @@
 <script>
 const API = '';
 
+function esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 function switchTab(name) {
     document.querySelectorAll('[id^="tab-"]').forEach(el => el.classList.add('hidden'));
     document.getElementById('tab-' + name).classList.remove('hidden');
@@ -183,7 +188,7 @@ function log(msg, type = 'info') {
     const el = document.getElementById('activity-log');
     const ts = new Date().toLocaleTimeString();
     const colors = { info: 'text-blue-400', success: 'text-green-400', error: 'text-red-400', warn: 'text-yellow-400' };
-    el.innerHTML += `<div class="${colors[type] || 'text-gray-400'}">[${ts}] ${msg}</div>`;
+    el.innerHTML += `<div class="${colors[type] || 'text-gray-400'}">[${ts}] ${esc(msg)}</div>`;
     el.scrollTop = el.scrollHeight;
 }
 
@@ -255,15 +260,17 @@ async function fetchStatus() {
         connectors.forEach(c => {
             const stateClass = 'state-' + c.state.toLowerCase();
             const tasks = c.tasks.map(t => t.state).join(', ') || 'none';
+            const safeName = esc(c.name);
+            const encodedName = encodeURIComponent(c.name);
             html += `<tr class="border-t border-gray-700">
-                <td class="px-4 py-3 font-mono text-xs">${c.name}</td>
-                <td class="px-4 py-3 font-semibold ${stateClass}">${c.state}</td>
-                <td class="px-4 py-3 text-gray-400">${c.type}</td>
-                <td class="px-4 py-3 text-gray-400 text-xs">${tasks}</td>
+                <td class="px-4 py-3 font-mono text-xs">${safeName}</td>
+                <td class="px-4 py-3 font-semibold ${stateClass}">${esc(c.state)}</td>
+                <td class="px-4 py-3 text-gray-400">${esc(c.type)}</td>
+                <td class="px-4 py-3 text-gray-400 text-xs">${esc(tasks)}</td>
                 <td class="px-4 py-3 text-right">
-                    <button onclick="connectorAction('${c.name}','pause')" class="text-xs text-yellow-400 hover:text-yellow-300 mr-2">Pause</button>
-                    <button onclick="connectorAction('${c.name}','resume')" class="text-xs text-green-400 hover:text-green-300 mr-2">Resume</button>
-                    <button onclick="connectorAction('${c.name}','restart')" class="text-xs text-blue-400 hover:text-blue-300">Restart</button>
+                    <button onclick="connectorAction('${encodedName}','pause')" class="text-xs text-yellow-400 hover:text-yellow-300 mr-2">Pause</button>
+                    <button onclick="connectorAction('${encodedName}','resume')" class="text-xs text-green-400 hover:text-green-300 mr-2">Resume</button>
+                    <button onclick="connectorAction('${encodedName}','restart')" class="text-xs text-blue-400 hover:text-blue-300">Restart</button>
                 </td></tr>`;
         });
 
@@ -285,10 +292,10 @@ async function fetchPlan() {
         connectors.forEach(c => {
             const typeColor = c.connector_type === 'source' ? 'text-purple-400' : 'text-cyan-400';
             html += `<tr class="border-t border-gray-700">
-                <td class="px-4 py-3 font-mono text-xs">${c.name}</td>
-                <td class="px-4 py-3 ${typeColor}">${c.connector_type}</td>
-                <td class="px-4 py-3 text-gray-300">${c.source_name}</td>
-                <td class="px-4 py-3 text-gray-400">${c.database_name}</td></tr>`;
+                <td class="px-4 py-3 font-mono text-xs">${esc(c.name)}</td>
+                <td class="px-4 py-3 ${typeColor}">${esc(c.connector_type)}</td>
+                <td class="px-4 py-3 text-gray-300">${esc(c.source_name)}</td>
+                <td class="px-4 py-3 text-gray-400">${esc(c.database_name)}</td></tr>`;
         });
 
         html += '</tbody></table>';
@@ -305,24 +312,24 @@ async function fetchConfig() {
         html += `<div class="card p-5">
             <h3 class="text-sm font-semibold mb-3 text-blue-400">Aiven / Kafka</h3>
             <div class="grid grid-cols-2 gap-2 text-xs">
-                <div class="text-gray-400">Project</div><div class="font-mono">${data.aiven_project}</div>
-                <div class="text-gray-400">Kafka Service</div><div class="font-mono">${data.kafka_service}</div>
-                <div class="text-gray-400">Kafka SSL</div><div class="font-mono">${data.kafka_ssl}</div>
-                <div class="text-gray-400">Table Strategy</div><div class="font-mono">${data.table_name_strategy}</div>
+                <div class="text-gray-400">Project</div><div class="font-mono">${esc(data.aiven_project)}</div>
+                <div class="text-gray-400">Kafka Service</div><div class="font-mono">${esc(data.kafka_service)}</div>
+                <div class="text-gray-400">Kafka SSL</div><div class="font-mono">${esc(data.kafka_ssl)}</div>
+                <div class="text-gray-400">Table Strategy</div><div class="font-mono">${esc(data.table_name_strategy)}</div>
             </div>
         </div>`;
 
         data.mysql_sources.forEach(src => {
             const dbs = src.databases.map(d => {
-                const tables = d.tables.length ? d.tables.join(', ') : 'all tables';
-                return `<span class="text-gray-300">${d.name}</span> <span class="text-gray-500">(${tables})</span>`;
+                const tables = d.tables.length ? esc(d.tables.join(', ')) : 'all tables';
+                return `<span class="text-gray-300">${esc(d.name)}</span> <span class="text-gray-500">(${tables})</span>`;
             }).join('<br>');
 
             html += `<div class="card p-5">
-                <h3 class="text-sm font-semibold mb-3 text-green-400">MySQL: ${src.name}</h3>
+                <h3 class="text-sm font-semibold mb-3 text-green-400">MySQL: ${esc(src.name)}</h3>
                 <div class="grid grid-cols-2 gap-2 text-xs">
-                    <div class="text-gray-400">Host</div><div class="font-mono">${src.host}:${src.port}</div>
-                    <div class="text-gray-400">Server ID</div><div class="font-mono">${src.server_id}</div>
+                    <div class="text-gray-400">Host</div><div class="font-mono">${esc(src.host)}:${esc(src.port)}</div>
+                    <div class="text-gray-400">Server ID</div><div class="font-mono">${esc(src.server_id)}</div>
                     <div class="text-gray-400">Databases</div><div>${dbs}</div>
                 </div>
             </div>`;
@@ -332,9 +339,9 @@ async function fetchConfig() {
         html += `<div class="card p-5">
             <h3 class="text-sm font-semibold mb-3 text-cyan-400">PostgreSQL Target</h3>
             <div class="grid grid-cols-2 gap-2 text-xs">
-                <div class="text-gray-400">Host</div><div class="font-mono">${pg.host}:${pg.port}</div>
-                <div class="text-gray-400">Database</div><div class="font-mono">${pg.database}</div>
-                <div class="text-gray-400">Username</div><div class="font-mono">${pg.username}</div>
+                <div class="text-gray-400">Host</div><div class="font-mono">${esc(pg.host)}:${esc(pg.port)}</div>
+                <div class="text-gray-400">Database</div><div class="font-mono">${esc(pg.database)}</div>
+                <div class="text-gray-400">Username</div><div class="font-mono">${esc(pg.username)}</div>
             </div>
         </div>`;
 
@@ -384,10 +391,10 @@ async function runVerify() {
         for (const [key, val] of Object.entries(data.checks)) {
             const icon = val ? '&#10003;' : '&#10007;';
             const color = val ? 'text-green-400' : 'text-red-400';
-            html += `<div class="flex items-center gap-2 text-sm mb-1"><span class="${color}">${icon}</span><span class="text-gray-300">${key}: ${val ? 'enabled' : 'disabled'}</span></div>`;
+            html += `<div class="flex items-center gap-2 text-sm mb-1"><span class="${color}">${icon}</span><span class="text-gray-300">${esc(key)}: ${val ? 'enabled' : 'disabled'}</span></div>`;
         }
         if (data.kafka_connect_uri) {
-            html += `<div class="text-xs text-gray-500 mt-2 font-mono">Connect URI: ${data.kafka_connect_uri}</div>`;
+            html += `<div class="text-xs text-gray-500 mt-2 font-mono">Connect URI: ${esc(data.kafka_connect_uri)}</div>`;
         }
 
         document.getElementById('verify-results').innerHTML = html;
@@ -419,10 +426,11 @@ async function runTeardown() {
     } catch {}
 }
 
-async function connectorAction(name, action) {
+async function connectorAction(encodedName, action) {
+    const name = decodeURIComponent(encodedName);
     log(`${action} connector: ${name}`, 'info');
     try {
-        await api(`/api/connector/${name}/${action}`, { method: 'POST' });
+        await api(`/api/connector/${encodedName}/${action}`, { method: 'POST' });
         log(`Connector ${name}: ${action} OK`, 'success');
         toast(`${name}: ${action} done`, 'success');
         setTimeout(fetchStatus, 1000);

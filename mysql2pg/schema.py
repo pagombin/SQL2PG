@@ -293,29 +293,26 @@ def ensure_database_exists(
         host=host, port=port, user=username, password=password,
         dbname=admin_database, sslmode="require",
     )
-    conn.autocommit = True
-    cursor = conn.cursor()
-
-    cursor.execute(
-        "SELECT 1 FROM pg_database WHERE datname = %s",
-        (target_database,),
-    )
-    exists = cursor.fetchone() is not None
-
-    if exists:
-        cursor.close()
-        conn.close()
-        return {"database": target_database, "status": "exists"}
-
     try:
-        cursor.execute(f'CREATE DATABASE "{target_database}"')
-        result = {"database": target_database, "status": "created"}
-    except psycopg2.Error as e:
-        result = {"database": target_database, "status": "error", "error": str(e).strip()}
+        conn.autocommit = True
+        cursor = conn.cursor()
 
-    cursor.close()
-    conn.close()
-    return result
+        cursor.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s",
+            (target_database,),
+        )
+        exists = cursor.fetchone() is not None
+
+        if exists:
+            return {"database": target_database, "status": "exists"}
+
+        try:
+            cursor.execute(f'CREATE DATABASE "{target_database}"')
+            return {"database": target_database, "status": "created"}
+        except psycopg2.Error as e:
+            return {"database": target_database, "status": "error", "error": str(e).strip()}
+    finally:
+        conn.close()
 
 
 def execute_ddl(
@@ -335,24 +332,24 @@ def execute_ddl(
         host=host, port=port, user=username, password=password,
         dbname=database, sslmode="require",
     )
-    conn.autocommit = True
-    cursor = conn.cursor()
+    try:
+        conn.autocommit = True
+        cursor = conn.cursor()
 
-    for stmt in statements:
-        stmt = stmt.strip()
-        if not stmt or stmt.startswith("--"):
-            continue
-        try:
-            cursor.execute(stmt)
-            results.append({"statement": stmt[:120], "status": "ok"})
-        except psycopg2.Error as e:
-            error_msg = str(e).strip()
-            results.append({"statement": stmt[:120], "status": "error", "error": error_msg})
-            if stop_on_error:
-                break
-
-    cursor.close()
-    conn.close()
+        for stmt in statements:
+            stmt = stmt.strip()
+            if not stmt or stmt.startswith("--"):
+                continue
+            try:
+                cursor.execute(stmt)
+                results.append({"statement": stmt[:120], "status": "ok"})
+            except psycopg2.Error as e:
+                error_msg = str(e).strip()
+                results.append({"statement": stmt[:120], "status": "error", "error": error_msg})
+                if stop_on_error:
+                    break
+    finally:
+        conn.close()
     return results
 
 
@@ -372,25 +369,25 @@ def execute_fk_constraints(
         host=host, port=port, user=username, password=password,
         dbname=database, sslmode="require",
     )
-    conn.autocommit = True
-    cursor = conn.cursor()
+    try:
+        conn.autocommit = True
+        cursor = conn.cursor()
 
-    for table in db_schema.tables:
-        for fk in table.foreign_keys:
-            if fk.referenced_schema != db_schema.name:
-                continue
-            stmt = generate_fk_ddl(fk)
-            try:
-                cursor.execute(stmt)
-                results.append({"constraint": fk.constraint_name, "table": fk.table_name, "status": "ok"})
-            except psycopg2.Error as e:
-                results.append({
-                    "constraint": fk.constraint_name,
-                    "table": fk.table_name,
-                    "status": "error",
-                    "error": str(e).strip(),
-                })
-
-    cursor.close()
-    conn.close()
+        for table in db_schema.tables:
+            for fk in table.foreign_keys:
+                if fk.referenced_schema != db_schema.name:
+                    continue
+                stmt = generate_fk_ddl(fk)
+                try:
+                    cursor.execute(stmt)
+                    results.append({"constraint": fk.constraint_name, "table": fk.table_name, "status": "ok"})
+                except psycopg2.Error as e:
+                    results.append({
+                        "constraint": fk.constraint_name,
+                        "table": fk.table_name,
+                        "status": "error",
+                        "error": str(e).strip(),
+                    })
+    finally:
+        conn.close()
     return results

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from dataclasses import asdict
@@ -33,6 +32,11 @@ def _pg_conn(host, port, user, password, database):
     )
 
 
+def _pg_sql():
+    from psycopg2 import sql
+    return sql
+
+
 # ── Row Count Verification ───────────────────────────────────────────
 
 def verify_row_counts(
@@ -56,6 +60,8 @@ def verify_row_counts(
         src_db = mapping["source_db"]
         tgt_db = mapping["target_db"]
 
+        my_conn = None
+        pg = None
         try:
             my_conn = _mysql_conn(mysql_host, mysql_port, mysql_user, mysql_password, src_db)
             my_cursor = my_conn.cursor()
@@ -71,65 +77,65 @@ def verify_row_counts(
             pg.autocommit = True
             pg_cursor = pg.cursor()
         except Exception as e:
-            my_cursor.close()
-            my_conn.close()
             results.append({
                 "database": src_db, "table": "--",
                 "status": "error", "error": f"PostgreSQL connection failed: {e}",
             })
             continue
+        finally:
+            if pg is None and my_conn:
+                my_conn.close()
 
-        # Get MySQL tables
-        my_cursor.execute(
-            "SELECT TABLE_NAME FROM information_schema.TABLES "
-            "WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'",
-            (src_db,),
-        )
-        mysql_tables = [row[0] for row in my_cursor.fetchall()]
+        try:
+            my_cursor.execute(
+                "SELECT TABLE_NAME FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'",
+                (src_db,),
+            )
+            mysql_tables = [row[0] for row in my_cursor.fetchall()]
 
-        if tables:
-            mysql_tables = [t for t in mysql_tables if t in tables]
+            if tables:
+                mysql_tables = [t for t in mysql_tables if t in tables]
 
-        for tname in mysql_tables:
-            try:
-                my_cursor.execute(f"SELECT COUNT(*) FROM `{src_db}`.`{tname}`")
-                src_count = my_cursor.fetchone()[0]
-            except Exception:
-                src_count = -1
+            sql = _pg_sql()
+            for tname in mysql_tables:
+                try:
+                    my_cursor.execute(f"SELECT COUNT(*) FROM `{src_db}`.`{tname}`")
+                    src_count = my_cursor.fetchone()[0]
+                except Exception:
+                    src_count = -1
 
-            try:
-                pg_cursor.execute(
-                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
-                    "WHERE table_schema = 'public' AND table_name = %s)",
-                    (tname,),
-                )
-                exists = pg_cursor.fetchone()[0]
-                if exists:
-                    pg_cursor.execute(f'SELECT COUNT(*) FROM "{tname}"')
-                    tgt_count = pg_cursor.fetchone()[0]
-                else:
+                try:
+                    pg_cursor.execute(
+                        "SELECT EXISTS(SELECT 1 FROM information_schema.tables "
+                        "WHERE table_schema = 'public' AND table_name = %s)",
+                        (tname,),
+                    )
+                    exists = pg_cursor.fetchone()[0]
+                    if exists:
+                        pg_cursor.execute(sql.SQL('SELECT COUNT(*) FROM {}').format(sql.Identifier(tname)))
+                        tgt_count = pg_cursor.fetchone()[0]
+                    else:
+                        tgt_count = -1
+                except Exception:
                     tgt_count = -1
-            except Exception:
-                tgt_count = -1
 
-            delta = abs(src_count - tgt_count) if src_count >= 0 and tgt_count >= 0 else -1
-            in_sync = src_count == tgt_count and src_count >= 0
+                delta = abs(src_count - tgt_count) if src_count >= 0 and tgt_count >= 0 else -1
+                in_sync = src_count == tgt_count and src_count >= 0
 
-            results.append({
-                "database": src_db,
-                "target_database": tgt_db,
-                "table": tname,
-                "source_rows": src_count,
-                "target_rows": tgt_count,
-                "delta": delta,
-                "in_sync": in_sync,
-                "status": "ok" if in_sync else ("behind" if tgt_count < src_count else "ahead"),
-            })
-
-        my_cursor.close()
-        my_conn.close()
-        pg_cursor.close()
-        pg.close()
+                results.append({
+                    "database": src_db,
+                    "target_database": tgt_db,
+                    "table": tname,
+                    "source_rows": src_count,
+                    "target_rows": tgt_count,
+                    "delta": delta,
+                    "in_sync": in_sync,
+                    "status": "ok" if in_sync else ("behind" if tgt_count < src_count else "ahead"),
+                })
+        finally:
+            my_conn.close()
+            pg.close()
 
     return results
 
@@ -143,6 +149,7 @@ def verify_schema_match(
 ) -> list[dict]:
     """Verify that expected tables exist on the PostgreSQL target."""
     results: list[dict] = []
+    conn = None
     try:
         conn = _pg_conn(pg_host, pg_port, pg_user, pg_password, database)
         conn.autocommit = True
@@ -171,11 +178,11 @@ def verify_schema_match(
                 "column_count": col_count,
                 "status": "ok" if exists else "missing",
             })
-
-        cursor.close()
-        conn.close()
     except Exception as e:
         results.append({"table": "--", "exists": False, "status": "error", "error": str(e)})
+    finally:
+        if conn:
+            conn.close()
 
     return results
 
@@ -188,12 +195,12 @@ def verify_fk_integrity(
 ) -> list[dict]:
     """Check for FK constraint violations on the PostgreSQL target."""
     results: list[dict] = []
+    conn = None
     try:
         conn = _pg_conn(pg_host, pg_port, pg_user, pg_password, database)
         conn.autocommit = True
         cursor = conn.cursor()
 
-        # Get all FK constraints
         cursor.execute("""
             SELECT
                 tc.constraint_name,
@@ -213,13 +220,21 @@ def verify_fk_integrity(
         """)
         fks = cursor.fetchall()
 
+        sql = _pg_sql()
         for constraint_name, table_name, column_name, ref_table, ref_column in fks:
             try:
-                cursor.execute(f"""
-                    SELECT COUNT(*) FROM "{table_name}" t
-                    LEFT JOIN "{ref_table}" r ON t."{column_name}" = r."{ref_column}"
-                    WHERE t."{column_name}" IS NOT NULL AND r."{ref_column}" IS NULL
-                """)
+                cursor.execute(sql.SQL(
+                    'SELECT COUNT(*) FROM {} t'
+                    ' LEFT JOIN {} r ON t.{} = r.{}'
+                    ' WHERE t.{} IS NOT NULL AND r.{} IS NULL'
+                ).format(
+                    sql.Identifier(table_name),
+                    sql.Identifier(ref_table),
+                    sql.Identifier(column_name),
+                    sql.Identifier(ref_column),
+                    sql.Identifier(column_name),
+                    sql.Identifier(ref_column),
+                ))
                 orphan_count = cursor.fetchone()[0]
                 results.append({
                     "constraint": constraint_name,
@@ -237,11 +252,11 @@ def verify_fk_integrity(
                     "status": "error",
                     "error": str(e),
                 })
-
-        cursor.close()
-        conn.close()
     except Exception as e:
         results.append({"constraint": "--", "status": "error", "error": str(e)})
+    finally:
+        if conn:
+            conn.close()
 
     return results
 
@@ -275,15 +290,13 @@ def compare_sample_data(
         return result
 
     order_by_mysql = ", ".join(f"`{c}`" for c in pk_columns)
-    order_by_pg = ", ".join(f'"{c}"' for c in pk_columns)
 
-    # MySQL sample
+    my_conn = None
     try:
         my_conn = _mysql_conn(mysql_host, mysql_port, mysql_user, mysql_password, source_db)
         my_cursor = my_conn.cursor(dictionary=True)
         my_cursor.execute(f"SELECT * FROM `{table_name}` ORDER BY {order_by_mysql} LIMIT %s", (sample_size,))
         src_rows = my_cursor.fetchall()
-        # Convert to JSON-safe
         for row in src_rows:
             for k, v in row.items():
                 if isinstance(v, (bytes, bytearray)):
@@ -293,14 +306,16 @@ def compare_sample_data(
                 elif isinstance(v, set):
                     row[k] = list(v)
         result["source_rows"] = src_rows
-        my_cursor.close()
-        my_conn.close()
     except Exception as e:
         result["source_error"] = str(e)
         return result
+    finally:
+        if my_conn:
+            my_conn.close()
 
-    # PG sample
+    pg = None
     try:
+        sql = _pg_sql()
         pg = _pg_conn(pg_host, pg_port, pg_user, pg_password, target_db)
         pg.autocommit = True
         pg_cursor = pg.cursor()
@@ -312,11 +327,15 @@ def compare_sample_data(
         )
         if not pg_cursor.fetchone()[0]:
             result["target_error"] = f"Table '{table_name}' does not exist on target"
-            pg_cursor.close()
-            pg.close()
             return result
 
-        pg_cursor.execute(f'SELECT * FROM "{table_name}" ORDER BY {order_by_pg} LIMIT %s', (sample_size,))
+        order_clause = sql.SQL(', ').join(sql.Identifier(c) for c in pk_columns)
+        pg_cursor.execute(
+            sql.SQL('SELECT * FROM {} ORDER BY {} LIMIT %s').format(
+                sql.Identifier(table_name), order_clause,
+            ),
+            (sample_size,),
+        )
         col_names = [desc[0] for desc in pg_cursor.description]
         tgt_rows = []
         for row in pg_cursor.fetchall():
@@ -331,11 +350,12 @@ def compare_sample_data(
             tgt_rows.append(row_dict)
 
         result["target_rows"] = tgt_rows
-        pg_cursor.close()
-        pg.close()
     except Exception as e:
         result["target_error"] = str(e)
         return result
+    finally:
+        if pg:
+            pg.close()
 
     # Compare
     matches = 0

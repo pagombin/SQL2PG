@@ -38,7 +38,6 @@ _NUMERIC_MAP = {
     "double": ("DOUBLE PRECISION", Severity.INFO, ""),
     "decimal": ("NUMERIC", Severity.INFO, ""),
     "numeric": ("NUMERIC", Severity.INFO, ""),
-    "bit": ("BIT", Severity.INFO, ""),
     "year": ("SMALLINT", Severity.WARN, "YEAR type mapped to SMALLINT; loses year-specific validation"),
     "bool": ("BOOLEAN", Severity.INFO, ""),
     "boolean": ("BOOLEAN", Severity.INFO, ""),
@@ -99,6 +98,20 @@ def map_column_type(
             note="TINYINT(1) treated as BOOLEAN",
         )
 
+    # BIT: Debezium sends BIT(1) as boolean, BIT(n>1) as byte array
+    if dtype == "bit":
+        if col.numeric_precision and col.numeric_precision == 1:
+            return TypeMapping(
+                mysql_type=dtype, mysql_column_type=ctype,
+                pg_type="BOOLEAN", severity=Severity.INFO,
+                note="BIT(1) mapped to BOOLEAN (Debezium emits as boolean)",
+            )
+        return TypeMapping(
+            mysql_type=dtype, mysql_column_type=ctype,
+            pg_type="BYTEA", severity=Severity.WARN,
+            note="BIT(n) mapped to BYTEA (Debezium emits as byte array)",
+        )
+
     # ENUM
     if dtype == "enum":
         ename = _enum_type_name(db_name, table_name, col.name)
@@ -113,8 +126,8 @@ def map_column_type(
     if dtype == "set":
         return TypeMapping(
             mysql_type=dtype, mysql_column_type=ctype,
-            pg_type="TEXT[]", severity=Severity.WARN,
-            note="SET mapped to TEXT array; behavioral difference from bitfield semantics",
+            pg_type="TEXT", severity=Severity.WARN,
+            note="SET mapped to TEXT; values stored as comma-separated string",
         )
 
     # Virtual generated columns (PG only supports STORED)
@@ -173,9 +186,6 @@ def map_column_type(
         if dtype in ("decimal", "numeric") and col.numeric_precision is not None:
             scale = col.numeric_scale or 0
             pg_type = f"NUMERIC({col.numeric_precision},{scale})"
-
-        if dtype == "bit" and col.numeric_precision:
-            pg_type = f"BIT({col.numeric_precision})"
 
         if dtype in ("char", "varchar") and col.character_maximum_length:
             pg_type = f"{pg_type}({col.character_maximum_length})"

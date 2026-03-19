@@ -85,66 +85,46 @@ create_user() {
 download_files() {
     banner "Downloading MySQL2PG"
 
-    mkdir -p "${INSTALL_DIR}"
+    local CLONE_URL="https://github.com/${REPO}.git"
 
-    local FILES=(
-        "main.py"
-        "requirements.txt"
-        "config.yaml.example"
-        "mysql2pg/__init__.py"
-        "mysql2pg/config.py"
-        "mysql2pg/aiven.py"
-        "mysql2pg/connectors.py"
-        "mysql2pg/testing.py"
-        "mysql2pg/web.py"
-        "mysql2pg/certs.py"
-        "mysql2pg/models.py"
-        "mysql2pg/discovery.py"
-        "mysql2pg/compatibility.py"
-        "mysql2pg/schema.py"
-        "mysql2pg/sizing.py"
-        "mysql2pg/migration.py"
-        "mysql2pg/verification.py"
-        "mysql2pg/templates/index.html"
-        "mysql2pg/templates/migrate.html"
-        "mysql2pg.service"
-    )
-
-    mkdir -p "${INSTALL_DIR}/mysql2pg/templates"
-
-    local UPDATED=0
-    for file in "${FILES[@]}"; do
-        local dest="${INSTALL_DIR}/${file}"
-        local url="${RAW_BASE}/${file}"
-        local tmp="${dest}.tmp"
-
-        if curl -fsSL "${url}" -o "${tmp}" 2>/dev/null; then
-            if [[ -f "${dest}" ]]; then
-                if ! cmp -s "${tmp}" "${dest}"; then
-                    mv "${tmp}" "${dest}"
-                    log "  Updated: ${file}"
-                    UPDATED=$((UPDATED + 1))
-                else
-                    rm -f "${tmp}"
-                fi
-            else
-                mv "${tmp}" "${dest}"
-                log "  Downloaded: ${file}"
-                UPDATED=$((UPDATED + 1))
-            fi
+    if [[ -d "${INSTALL_DIR}/.git" ]]; then
+        log "Existing installation found, pulling updates..."
+        cd "${INSTALL_DIR}"
+        git fetch origin "${BRANCH}" --quiet
+        local LOCAL_REV
+        LOCAL_REV=$(git rev-parse HEAD 2>/dev/null || echo "none")
+        git checkout "${BRANCH}" --quiet 2>/dev/null || git checkout -b "${BRANCH}" "origin/${BRANCH}" --quiet
+        git reset --hard "origin/${BRANCH}" --quiet
+        local REMOTE_REV
+        REMOTE_REV=$(git rev-parse HEAD)
+        if [[ "${LOCAL_REV}" == "${REMOTE_REV}" ]]; then
+            log "  Already up to date."
         else
-            rm -f "${tmp}"
-            warn "  Failed to download: ${file}"
+            log "  Updated to ${REMOTE_REV:0:8}"
         fi
-    done
-
-    if [[ ${UPDATED} -eq 0 ]]; then
-        log "  All files are up to date."
+        cd - > /dev/null
     else
-        log "  ${UPDATED} file(s) updated."
+        log "Cloning ${CLONE_URL} (branch: ${BRANCH})..."
+        local PARENT_DIR
+        PARENT_DIR=$(dirname "${INSTALL_DIR}")
+        mkdir -p "${PARENT_DIR}"
+        # Preserve config.yaml if it exists from a non-git install
+        local SAVED_CONFIG=""
+        if [[ -f "${INSTALL_DIR}/config.yaml" ]]; then
+            SAVED_CONFIG=$(mktemp)
+            cp "${INSTALL_DIR}/config.yaml" "${SAVED_CONFIG}"
+        fi
+        rm -rf "${INSTALL_DIR}"
+        git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" "${INSTALL_DIR}" --quiet
+        if [[ -n "${SAVED_CONFIG}" ]]; then
+            cp "${SAVED_CONFIG}" "${INSTALL_DIR}/config.yaml"
+            rm -f "${SAVED_CONFIG}"
+            log "  Restored existing config.yaml"
+        fi
+        log "  Clone complete."
     fi
 
-    echo "${UPDATED}"
+    mkdir -p "${INSTALL_DIR}/mysql2pg/templates"
 }
 
 setup_venv() {

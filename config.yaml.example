@@ -10,10 +10,10 @@ aiven:
 kafka:
   # Kafka cluster service name as shown in DigitalOcean/Aiven
   service_name: "db-kafka-nyc3-93111"
-  # SSL hostname and port from the Kafka cluster Overview -> Connection Details -> SSL tab.
-  # IMPORTANT: Use the SSL connection details, NOT SASL.
-  ssl_host: "kafka-ssl-hostname"
-  ssl_port: 25062
+  # SSL hostname and port (OPTIONAL - auto-resolved from the Aiven API if omitted).
+  # If set manually, use the SSL connection details from Kafka Overview -> Connection Details -> SSL tab.
+  # ssl_host: "kafka-ssl-hostname"
+  # ssl_port: 25062
 
 # Multiple MySQL source databases.
 # Each source represents a distinct MySQL instance that can contain one or more databases.

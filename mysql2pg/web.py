@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import os
 import ssl
-import threading
-import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +27,6 @@ app.config["JSON_SORT_KEYS"] = False
 
 _app_config: AppConfig | None = None
 _config_path: str = "config.yaml"
-_background_tasks: dict[str, dict] = {}
 
 
 def _get_config() -> AppConfig:
@@ -48,6 +45,15 @@ def _reload_config() -> AppConfig:
 def _get_client() -> AivenClient:
     config = _get_config()
     return AivenClient(config.aiven.token, config.aiven.project)
+
+
+def _resolve_ssl(config: AppConfig, client: AivenClient | None = None) -> tuple[str, int]:
+    """Return Kafka SSL host/port, resolving from the Aiven API if needed."""
+    if config.kafka.ssl_host and config.kafka.ssl_port:
+        return config.kafka.ssl_host, config.kafka.ssl_port
+    if client is None:
+        client = _get_client()
+    return client.get_kafka_ssl_endpoint(config.kafka.service_name)
 
 
 def _plan_to_dict(plan: ConnectorPlan) -> dict:
@@ -91,7 +97,7 @@ def info():
         return jsonify({
             "aiven_project": config.aiven.project,
             "kafka_service": config.kafka.service_name,
-            "kafka_ssl": f"{config.kafka.ssl_host}:{config.kafka.ssl_port}",
+            "kafka_ssl": f"{config.kafka.ssl_host}:{config.kafka.ssl_port}" if config.kafka.ssl_host else "auto-resolved from API",
             "table_name_strategy": config.table_name_strategy,
             "mysql_sources": sources,
             "postgresql_target": {
@@ -111,7 +117,8 @@ def info():
 def plan():
     try:
         config = _get_config()
-        plans = build_all_connectors(config)
+        ssl_host, ssl_port = _resolve_ssl(config)
+        plans = build_all_connectors(config, ssl_host, ssl_port)
         return jsonify({
             "connectors": [_plan_to_dict(p) for p in plans],
             "source_count": sum(1 for p in plans if p.connector_type == "source"),
@@ -196,7 +203,8 @@ def deploy():
         body = request.get_json(silent=True) or {}
         filter_type = body.get("type")
 
-        all_plans = build_all_connectors(config)
+        ssl_host, ssl_port = _resolve_ssl(config, client)
+        all_plans = build_all_connectors(config, ssl_host, ssl_port)
         if filter_type == "source":
             plans = [p for p in all_plans if p.connector_type == "source"]
         elif filter_type == "sink":
@@ -245,7 +253,8 @@ def teardown():
             result = client.list_connectors(kafka_svc)
             names = [c.get("name") for c in result.get("connectors", []) if c.get("name")]
         else:
-            names = get_all_connector_names(config)
+            ssl_host, ssl_port = _resolve_ssl(config, client)
+            names = get_all_connector_names(config, ssl_host, ssl_port)
 
         deleted = []
         failed = []
@@ -646,13 +655,12 @@ def api_live_comparison(mid: str):
     if not state:
         return jsonify({"error": "Migration not found"}), 404
 
-    # Passwords must be supplied as query params for GET requests
-    mysql_password = request.args.get("mysql_password", state.mysql_password)
-    pg_password = request.args.get("pg_password", state.pg_password)
     include_samples = request.args.get("samples", "false").lower() == "true"
 
-    state.mysql_password = mysql_password
-    state.pg_password = pg_password
+    if not state.mysql_password or not state.pg_password:
+        return jsonify({
+            "error": "Passwords not available. Use POST with mysql_password and pg_password in the request body."
+        }), 400
 
     try:
         result = get_live_comparison(state, include_samples=include_samples)
@@ -695,8 +703,13 @@ def run_server(
     port: int = 8443,
     cert_dir: str = "/opt/mysql2pg/certs",
     debug: bool = False,
+    workers: int = 2,
 ) -> None:
-    """Start the HTTPS server with self-signed certificates."""
+    """Start the HTTPS server with self-signed certificates.
+
+    Uses gunicorn for production serving.  Falls back to Flask's built-in
+    server when gunicorn is unavailable (e.g. during local development).
+    """
     global _config_path
     _config_path = config_path
 
@@ -709,16 +722,47 @@ def run_server(
         cert_path, key_path = get_cert_paths(cert_dir)
         print(f"Using existing certificates from {cert_dir}")
 
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ssl_context.load_cert_chain(str(cert_path), str(key_path))
-
     print(f"\nMySQL2PG Web UI: https://{host}:{port}")
     print(f"API Health:      https://{host}:{port}/api/health")
     print(f"Config file:     {config_path}\n")
 
-    app.run(
-        host=host,
-        port=port,
-        ssl_context=ssl_context,
-        debug=debug,
-    )
+    if debug:
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_context.load_cert_chain(str(cert_path), str(key_path))
+        app.run(host=host, port=port, ssl_context=ssl_context, debug=True)
+        return
+
+    try:
+        from gunicorn.app.base import BaseApplication
+
+        class _GunicornApp(BaseApplication):
+            def __init__(self, flask_app, options=None):
+                self.flask_app = flask_app
+                self.options = options or {}
+                super().__init__()
+
+            def load_config(self):
+                for key, value in self.options.items():
+                    if key in self.cfg.settings and value is not None:
+                        self.cfg.set(key.lower(), value)
+
+            def load(self):
+                return self.flask_app
+
+        options = {
+            "bind": f"{host}:{port}",
+            "workers": workers,
+            "certfile": str(cert_path),
+            "keyfile": str(key_path),
+            "accesslog": "-",
+            "errorlog": "-",
+            "timeout": 120,
+        }
+        print(f"Starting gunicorn with {workers} worker(s)...")
+        _GunicornApp(app, options).run()
+
+    except ImportError:
+        print("gunicorn not installed, falling back to Flask dev server")
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ssl_context.load_cert_chain(str(cert_path), str(key_path))
+        app.run(host=host, port=port, ssl_context=ssl_context, debug=False)

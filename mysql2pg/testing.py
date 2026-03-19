@@ -90,6 +90,7 @@ def _get_pg_connection(pg: PostgreSQLTarget):
 
 def setup_mysql_test_database(source: MySQLSource, db_name: str = "inventory") -> TestResult:
     """Create the test database and table in MySQL, insert sample data."""
+    conn = None
     try:
         conn = _get_mysql_connection(source)
         cursor = conn.cursor()
@@ -105,8 +106,6 @@ def setup_mysql_test_database(source: MySQLSource, db_name: str = "inventory") -
 
         cursor.execute("SELECT COUNT(*) FROM customers")
         count = cursor.fetchone()[0]
-        cursor.close()
-        conn.close()
 
         return TestResult(
             source_name=source.name,
@@ -126,6 +125,9 @@ def setup_mysql_test_database(source: MySQLSource, db_name: str = "inventory") -
             passed=False,
             message=f"MySQL setup failed: {e}",
         )
+    finally:
+        if conn:
+            conn.close()
 
 
 def verify_pg_initial_replication(
@@ -196,14 +198,13 @@ def verify_pg_initial_replication(
 
 def update_mysql_record(source: MySQLSource, db_name: str = "inventory") -> TestResult:
     """Update a record in MySQL to test CDC propagation."""
+    conn = None
     try:
         conn = _get_mysql_connection(source, database=db_name)
         cursor = conn.cursor()
         cursor.execute(TEST_UPDATE_SQL)
         conn.commit()
         affected = cursor.rowcount
-        cursor.close()
-        conn.close()
 
         return TestResult(
             source_name=source.name,
@@ -223,6 +224,9 @@ def update_mysql_record(source: MySQLSource, db_name: str = "inventory") -> Test
             passed=False,
             message=f"MySQL update failed: {e}",
         )
+    finally:
+        if conn:
+            conn.close()
 
 
 def verify_pg_update(
@@ -280,13 +284,12 @@ def verify_pg_update(
 
 def cleanup_mysql_test_data(source: MySQLSource, db_name: str = "inventory") -> TestResult:
     """Clean up test data from MySQL."""
+    conn = None
     try:
         conn = _get_mysql_connection(source, database=db_name)
         cursor = conn.cursor()
         cursor.execute("DROP TABLE IF EXISTS customers")
         conn.commit()
-        cursor.close()
-        conn.close()
         return TestResult(
             source_name=source.name,
             database_name=db_name,
@@ -304,17 +307,19 @@ def cleanup_mysql_test_data(source: MySQLSource, db_name: str = "inventory") -> 
             passed=False,
             message=f"MySQL cleanup failed: {e}",
         )
+    finally:
+        if conn:
+            conn.close()
 
 
 def cleanup_pg_test_data(pg: PostgreSQLTarget, table_name: str = "customers") -> TestResult:
     """Clean up test data from PostgreSQL."""
+    conn = None
     try:
         conn = _get_pg_connection(pg)
         conn.autocommit = True
         cursor = conn.cursor()
         cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
-        cursor.close()
-        conn.close()
         return TestResult(
             source_name="",
             database_name=pg.database,
@@ -332,6 +337,9 @@ def cleanup_pg_test_data(pg: PostgreSQLTarget, table_name: str = "customers") ->
             passed=False,
             message=f"PostgreSQL cleanup failed: {e}",
         )
+    finally:
+        if conn:
+            conn.close()
 
 
 def run_full_test(

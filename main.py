@@ -19,6 +19,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from mysql2pg import __version__
 from mysql2pg.config import load_config, AppConfig
 from mysql2pg.aiven import AivenClient, AivenAPIError
 from mysql2pg.connectors import (
@@ -46,6 +47,17 @@ def _client(config: AppConfig) -> AivenClient:
     return AivenClient(config.aiven.token, config.aiven.project)
 
 
+def _resolve_ssl(config: AppConfig, client: AivenClient | None = None) -> tuple[str, int]:
+    """Return Kafka SSL host/port, resolving from the Aiven API if needed."""
+    if config.kafka.ssl_host and config.kafka.ssl_port:
+        return config.kafka.ssl_host, config.kafka.ssl_port
+    if client is None:
+        client = _client(config)
+    host, port = client.get_kafka_ssl_endpoint(config.kafka.service_name)
+    console.print(f"  Kafka SSL endpoint (auto-resolved): [cyan]{host}:{port}[/cyan]")
+    return host, port
+
+
 def _print_connector_table(plans: list[ConnectorPlan]) -> None:
     table = Table(title="Connector Plan")
     table.add_column("Name", style="cyan")
@@ -60,6 +72,7 @@ def _print_connector_table(plans: list[ConnectorPlan]) -> None:
 # ── CLI Group ────────────────────────────────────────────────────────
 
 @click.group()
+@click.version_option(version=__version__, prog_name="mysql2pg")
 @click.option("--config", "-c", default="config.yaml", help="Path to config file")
 @click.pass_context
 def cli(ctx: click.Context, config: str) -> None:
@@ -113,7 +126,8 @@ def setup(ctx: click.Context) -> None:
 def plan(ctx: click.Context) -> None:
     """Show the connector deployment plan without making any changes."""
     config = _load(ctx.obj["config_path"])
-    plans = build_all_connectors(config)
+    ssl_host, ssl_port = _resolve_ssl(config)
+    plans = build_all_connectors(config, ssl_host, ssl_port)
 
     console.print(Panel("[bold]Connector Deployment Plan[/bold]"))
     _print_connector_table(plans)
@@ -137,7 +151,8 @@ def deploy(ctx: click.Context, sources_only: bool, sinks_only: bool, wait: bool,
     client = _client(config)
     kafka_svc = config.kafka.service_name
 
-    all_plans = build_all_connectors(config)
+    ssl_host, ssl_port = _resolve_ssl(config, client)
+    all_plans = build_all_connectors(config, ssl_host, ssl_port)
     if sources_only:
         plans = [p for p in all_plans if p.connector_type == "source"]
     elif sinks_only:
@@ -296,7 +311,8 @@ def teardown(ctx: click.Context, delete_all: bool, yes: bool) -> None:
             console.print(f"[red]Failed to list connectors: {e}[/red]")
             sys.exit(1)
     else:
-        names = get_all_connector_names(config)
+        ssl_host, ssl_port = _resolve_ssl(config, client)
+        names = get_all_connector_names(config, ssl_host, ssl_port)
 
     if not names:
         console.print("[yellow]No connectors to delete.[/yellow]")
@@ -522,21 +538,24 @@ def info(ctx: click.Context) -> None:
 @click.option("--host", default="0.0.0.0", help="Bind address")
 @click.option("--port", default=8443, type=int, help="HTTPS port")
 @click.option("--cert-dir", default="/opt/mysql2pg/certs", help="Directory for TLS certificates")
-@click.option("--debug", is_flag=True, help="Enable Flask debug mode")
+@click.option("--workers", default=2, type=int, help="Number of gunicorn worker processes")
+@click.option("--debug", is_flag=True, help="Enable Flask debug mode (single-threaded, auto-reload)")
 @click.pass_context
-def serve(ctx: click.Context, host: str, port: int, cert_dir: str, debug: bool) -> None:
+def serve(ctx: click.Context, host: str, port: int, cert_dir: str, workers: int, debug: bool) -> None:
     """Start the MySQL2PG web dashboard over HTTPS."""
     config_path = ctx.obj["config_path"]
     console.print(Panel("[bold]MySQL2PG Web Server[/bold]"))
     console.print(f"  Config:  [cyan]{config_path}[/cyan]")
     console.print(f"  Listen:  [cyan]https://{host}:{port}[/cyan]")
-    console.print(f"  Certs:   [cyan]{cert_dir}[/cyan]\n")
+    console.print(f"  Certs:   [cyan]{cert_dir}[/cyan]")
+    console.print(f"  Workers: [cyan]{workers}[/cyan]\n")
     run_server(
         config_path=config_path,
         host=host,
         port=port,
         cert_dir=cert_dir,
         debug=debug,
+        workers=workers,
     )
 
 

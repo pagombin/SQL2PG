@@ -120,21 +120,20 @@ def _build_sink_base_config(
         "connection.url": connection_url,
         "connection.user": pg.username,
         "connection.password": pg.password,
-        "auto.create": "true",
+        "auto.create": "false",
         "insert.mode": "upsert",
         "delete.enabled": "true",
         "pk.mode": "record_key",
-        "pk.fields": "id",
         "key.converter": "org.apache.kafka.connect.json.JsonConverter",
         "key.converter.schemas.enable": "true",
         "value.converter": "org.apache.kafka.connect.json.JsonConverter",
         "value.converter.schemas.enable": "true",
-        "transforms": "unwrap,route",
-        "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-        "transforms.unwrap.drop.tombstones": "false",
+        "transforms": "route",
         "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
         "transforms.route.regex": route_regex,
         "transforms.route.replacement": route_replacement,
+        "errors.tolerance": "all",
+        "errors.deadletterqueue.context.headers.enable": "true",
     }
 
 
@@ -159,6 +158,7 @@ def build_sink_connectors_for_source(
         base = _build_sink_base_config(pg, table_name_strategy)
         name = _sink_connector_name(source, db)
         base["name"] = name
+        base["errors.deadletterqueue.topic.name"] = f"dlq-{_sanitize_name(source.name)}-{_sanitize_name(db.name)}"
 
         if db.tables:
             topics = ",".join(
@@ -180,16 +180,29 @@ def build_sink_connectors_for_source(
     return plans
 
 
-def build_all_connectors(config: AppConfig) -> list[ConnectorPlan]:
-    """Build the full set of source + sink connector plans from config."""
+def build_all_connectors(
+    config: AppConfig,
+    kafka_ssl_host: str | None = None,
+    kafka_ssl_port: int | None = None,
+) -> list[ConnectorPlan]:
+    """Build the full set of source + sink connector plans from config.
+
+    If *kafka_ssl_host*/*kafka_ssl_port* are supplied they take precedence
+    over the values in ``config.kafka``.  This allows callers that resolved
+    the endpoint via the Aiven API to pass it in directly.
+    """
+    ssl_host = kafka_ssl_host or config.kafka.ssl_host
+    ssl_port = kafka_ssl_port or config.kafka.ssl_port
+    if not ssl_host or not ssl_port:
+        raise ValueError(
+            "Kafka SSL endpoint is not configured. Either set ssl_host/ssl_port "
+            "in config.yaml or resolve via the Aiven API before calling build_all_connectors."
+        )
+
     plans: list[ConnectorPlan] = []
 
     for source in config.mysql_sources:
-        source_plan = build_source_connector(
-            source,
-            config.kafka.ssl_host,
-            config.kafka.ssl_port,
-        )
+        source_plan = build_source_connector(source, ssl_host, ssl_port)
         plans.append(source_plan)
 
         sink_plans = build_sink_connectors_for_source(
@@ -202,9 +215,13 @@ def build_all_connectors(config: AppConfig) -> list[ConnectorPlan]:
     return plans
 
 
-def get_all_connector_names(config: AppConfig) -> list[str]:
+def get_all_connector_names(
+    config: AppConfig,
+    kafka_ssl_host: str | None = None,
+    kafka_ssl_port: int | None = None,
+) -> list[str]:
     """Get all expected connector names from config."""
-    return [plan.name for plan in build_all_connectors(config)]
+    return [plan.name for plan in build_all_connectors(config, kafka_ssl_host, kafka_ssl_port)]
 
 
 def get_source_connector_names(config: AppConfig) -> list[str]:
@@ -353,14 +370,11 @@ def build_discovered_connectors(
             "insert.mode": "upsert",
             "delete.enabled": "true",
             "pk.mode": "record_key",
-            "pk.fields": ",".join(sorted(pk_fields_set)) if pk_fields_set else "id",
             "key.converter": "org.apache.kafka.connect.json.JsonConverter",
             "key.converter.schemas.enable": "true",
             "value.converter": "org.apache.kafka.connect.json.JsonConverter",
             "value.converter.schemas.enable": "true",
-            "transforms": "unwrap,route",
-            "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
-            "transforms.unwrap.drop.tombstones": "false",
+            "transforms": "route",
             "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
             "transforms.route.regex": "[^.]+\\.[^.]+\\.(.*)",
             "transforms.route.replacement": "$1",
@@ -368,6 +382,9 @@ def build_discovered_connectors(
             "errors.deadletterqueue.topic.name": f"dlq-{_sanitize_name(src_db)}",
             "errors.deadletterqueue.context.headers.enable": "true",
         }
+
+        if pk_fields_set:
+            sink_config["pk.fields"] = ",".join(sorted(pk_fields_set))
 
         configs.append(sink_config)
 

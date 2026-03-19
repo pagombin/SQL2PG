@@ -104,6 +104,43 @@ class AivenClient:
             {"kafka": {"auto_create_topics_enable": True}},
         )
 
+    def get_kafka_ssl_endpoint(self, service_name: str) -> tuple[str, int]:
+        """Resolve the Kafka broker SSL host and port from the Aiven API.
+
+        Inspects the service's connection_info and components to find the
+        SSL bootstrap endpoint.  Raises AivenAPIError if it cannot be
+        determined.
+        """
+        data = self.get_service(service_name)
+        service = data.get("service", {})
+
+        # service_uri is typically "host:port" for the primary SSL endpoint
+        service_uri = service.get("service_uri", "")
+        if service_uri:
+            # Format: host:port or kafka://host:port
+            uri = service_uri.split("://")[-1]
+            if ":" in uri:
+                host, port_str = uri.rsplit(":", 1)
+                try:
+                    return host, int(port_str)
+                except ValueError:
+                    pass
+
+        # Fall back to components list
+        for component in service.get("components", []):
+            if component.get("component") == "kafka" and component.get("route") == "dynamic":
+                return component["host"], int(component["port"])
+
+        # Try any kafka component
+        for component in service.get("components", []):
+            if component.get("component") == "kafka":
+                return component["host"], int(component["port"])
+
+        raise AivenAPIError(
+            f"Could not determine Kafka SSL endpoint for service '{service_name}'. "
+            f"Set ssl_host and ssl_port in config.yaml manually."
+        )
+
     def get_kafka_connect_uri(self, service_name: str) -> str | None:
         """
         Retrieve the kafka_connect_uri from service connection info.
