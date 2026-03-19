@@ -87,6 +87,7 @@ download_files() {
 
     local CLONE_URL="https://github.com/${REPO}.git"
     mkdir -p "${INSTALL_DIR}"
+    git config --global --add safe.directory "${INSTALL_DIR}" 2>/dev/null || true
 
     if [[ ! -d "${INSTALL_DIR}/.git" ]]; then
         log "Initializing git repository..."
