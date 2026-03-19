@@ -177,6 +177,16 @@
 
     <div id="sample-data" class="mb-4"></div>
 
+    <!-- Schema Drift Detection -->
+    <div class="card p-4 mb-4">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-semibold">Schema Drift Detection</h3>
+            <button onclick="checkDrift()" class="btn text-xs px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-700">Check for Schema Changes</button>
+        </div>
+        <p class="text-xs text-gray-400 mb-2">Compares the current MySQL schema against PostgreSQL to detect new tables or column changes since the migration started.</p>
+        <div id="drift-results"></div>
+    </div>
+
     <div class="flex gap-3 mt-4">
         <button onclick="applyConstraints()" class="btn px-4 py-2 rounded-lg bg-yellow-600 text-sm font-medium" id="btn-fk">Apply FK Constraints</button>
         <button onclick="completeMigration()" class="btn px-4 py-2 rounded-lg bg-green-600 text-sm font-medium">Complete Migration</button>
@@ -623,6 +633,37 @@ function toggleAutoRefresh() {
         btn.textContent = 'Auto-Refresh: On (10s)';
         btn.className = 'btn text-xs px-3 py-1.5 rounded-lg bg-green-700';
     }
+}
+
+async function checkDrift() {
+    try {
+        const data = await api(`/api/migrations/${MID}/schema-drift`, {
+            method: 'POST',
+            body: JSON.stringify({
+                mysql_password: document.getElementById('src-pass').value,
+                pg_password: document.getElementById('tgt-pass').value,
+            }),
+        });
+        const el = document.getElementById('drift-results');
+        if (!data.has_drift) {
+            el.innerHTML = '<div class="text-sm text-green-400">No schema drift detected. MySQL and PostgreSQL schemas are in sync.</div>';
+            return;
+        }
+        let html = `<div class="text-sm text-yellow-400 mb-2">${data.drift_count} difference(s) found:</div>`;
+        html += '<div class="space-y-1 max-h-48 overflow-y-auto">';
+        data.drift.forEach(d => {
+            if (d.type === 'new_table') {
+                html += `<div class="text-xs p-2 bg-gray-800 rounded"><span class="text-red-400 font-bold">NEW TABLE</span> <span class="text-gray-300">${esc(d.target_database)}.${esc(d.table)}</span> &mdash; exists in MySQL but not PostgreSQL (${d.columns.length} columns)</div>`;
+            } else {
+                const parts = [];
+                if (d.added_columns.length) parts.push(`<span class="text-green-400">+${d.added_columns.join(', +')}</span>`);
+                if (d.removed_columns.length) parts.push(`<span class="text-red-400">-${d.removed_columns.join(', -')}</span>`);
+                html += `<div class="text-xs p-2 bg-gray-800 rounded"><span class="text-yellow-400 font-bold">DRIFT</span> <span class="text-gray-300">${esc(d.target_database)}.${esc(d.table)}</span> &mdash; ${parts.join(' ')}</div>`;
+            }
+        });
+        html += '</div>';
+        el.innerHTML = html;
+    } catch(e) { toast(e.message, 'error'); }
 }
 
 async function applyConstraints() {
