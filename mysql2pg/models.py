@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 import json
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -396,15 +396,16 @@ class MigrationState:
     error_message: str = ""
 
     def add_event(self, level: str, message: str, details: dict | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self.events.append({
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": now,
             "level": level,
             "message": message,
             "details": details or {},
         })
         if len(self.events) > 500:
             self.events = self.events[-500:]
-        self.updated_at = datetime.utcnow().isoformat() + "Z"
+        self.updated_at = now
 
     def to_dict(self) -> dict:
         d = asdict(self)

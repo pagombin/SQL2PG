@@ -7,10 +7,11 @@ State is persisted to disk so migrations survive server restarts.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +47,9 @@ def _state_path(migration_id: str) -> Path:
 
 def save_state(state: MigrationState) -> None:
     _ensure_dir()
-    state.updated_at = datetime.utcnow().isoformat() + "Z"
+    state.updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with open(_state_path(state.migration_id), "w") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         json.dump(state.to_dict(), f, indent=2, default=str)
 
 
@@ -56,6 +58,7 @@ def load_state(migration_id: str) -> MigrationState | None:
     if not path.exists():
         return None
     with open(path) as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
         data = json.load(f)
     return MigrationState.from_dict(data)
 
@@ -92,15 +95,23 @@ def delete_migration(migration_id: str) -> bool:
 # ── Migration Creation ───────────────────────────────────────────────
 
 def create_migration() -> MigrationState:
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     state = MigrationState(
-        migration_id=str(uuid.uuid4())[:8],
+        migration_id=uuid.uuid4().hex[:12],
         phase=MigrationPhase.CREATED,
-        created_at=datetime.utcnow().isoformat() + "Z",
-        updated_at=datetime.utcnow().isoformat() + "Z",
+        created_at=now,
+        updated_at=now,
     )
     state.add_event("info", "Migration created")
     save_state(state)
     return state
+
+
+def _get_effective_mappings(state: MigrationState) -> list[dict]:
+    """Return database mappings, falling back to identity mappings."""
+    if state.database_mappings:
+        return state.database_mappings
+    return [{"source_db": db, "target_db": db} for db in state.selected_databases]
 
 
 # ── Step Executors ───────────────────────────────────────────────────
@@ -287,9 +298,7 @@ def step_create_schema(state: MigrationState) -> MigrationState:
         all_ddl: list[str] = []
         all_results: list[dict] = []
 
-        mappings = state.database_mappings
-        if not mappings:
-            mappings = [{"source_db": db, "target_db": db} for db in state.selected_databases]
+        mappings = _get_effective_mappings(state)
 
         # The admin database is the one the user connected with during target
         # discovery (e.g. "defaultdb").  We use it to CREATE DATABASE.
@@ -405,9 +414,7 @@ def step_deploy_connectors(
         from .connectors import build_discovered_connectors
 
         cluster = rebuild_cluster_from_summary(state.source_cluster)
-        mappings = state.database_mappings
-        if not mappings:
-            mappings = [{"source_db": db, "target_db": db} for db in state.selected_databases]
+        mappings = _get_effective_mappings(state)
 
         connector_configs = build_discovered_connectors(
             cluster=cluster,
@@ -470,9 +477,7 @@ def step_apply_constraints(
 
     try:
         cluster = rebuild_cluster_from_summary(state.source_cluster)
-        mappings = state.database_mappings
-        if not mappings:
-            mappings = [{"source_db": db, "target_db": db} for db in state.selected_databases]
+        mappings = _get_effective_mappings(state)
 
         total_ok = 0
         total_err = 0
@@ -521,9 +526,7 @@ def step_verify(state: MigrationState) -> MigrationState:
     save_state(state)
 
     try:
-        mappings = state.database_mappings
-        if not mappings:
-            mappings = [{"source_db": db, "target_db": db} for db in state.selected_databases]
+        mappings = _get_effective_mappings(state)
 
         row_results = verify_row_counts(
             state.mysql_host, state.mysql_port,
@@ -569,9 +572,7 @@ def step_complete(state: MigrationState) -> MigrationState:
 
 def get_live_comparison(state: MigrationState, include_samples: bool = False) -> dict:
     """Get live data comparison for an active migration."""
-    mappings = state.database_mappings
-    if not mappings:
-        mappings = [{"source_db": db, "target_db": db} for db in state.selected_databases]
+    mappings = _get_effective_mappings(state)
 
     cluster = None
     if include_samples and state.source_cluster:
