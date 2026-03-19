@@ -180,11 +180,18 @@ def status():
                 conn_type = "?"
                 tasks = []
 
+            task_details = []
+            for t in tasks:
+                td = {"id": t.get("id"), "state": t.get("state", "?")}
+                if t.get("state") == "FAILED" and t.get("trace"):
+                    td["trace"] = t["trace"]
+                task_details.append(td)
+
             statuses.append({
                 "name": name,
                 "state": state,
                 "type": conn_type,
-                "tasks": [{"id": t.get("id"), "state": t.get("state", "?")} for t in tasks],
+                "tasks": task_details,
             })
 
         return jsonify({"connectors": statuses})
@@ -361,6 +368,23 @@ def verify():
 
 
 # ── API: Connector Actions ───────────────────────────────────────────
+
+@app.route("/api/connector/<name>", methods=["DELETE"])
+def delete_single_connector(name: str):
+    try:
+        config = _get_config()
+        client = _get_client()
+        body = request.get_json(silent=True) or {}
+        kafka_svc = body.get("service") or request.args.get("service") or _get_kafka_service(config)
+        if not kafka_svc:
+            return jsonify({"error": "No Kafka service specified"}), 400
+        client.delete_connector(kafka_svc, name)
+        return jsonify({"message": f"Connector '{name}' deleted"})
+    except AivenAPIError as e:
+        if e.status_code == 404:
+            return jsonify({"message": f"Connector '{name}' not found (already deleted)"})
+        return jsonify({"error": str(e)}), 502
+
 
 @app.route("/api/connector/<name>/pause", methods=["POST"])
 def pause_connector(name: str):
@@ -540,12 +564,37 @@ def api_select_kafka(mid: str):
 
     try:
         client = _get_client()
-        client.get_service(service_name)
+        service_data = client.get_service(service_name)
+        features = service_data.get("service", {}).get("features", {})
+        kafka_connect_enabled = features.get("kafka_connect", False)
+
+        setup_steps = []
+
+        if not kafka_connect_enabled:
+            client.enable_kafka_connect(service_name)
+            setup_steps.append("kafka_connect_enabled")
+
+        try:
+            user_config = service_data.get("service", {}).get("user_config", {})
+            auto_create = user_config.get("kafka", {}).get("auto_create_topics_enable", False)
+            if not auto_create:
+                client.enable_auto_create_topics(service_name)
+                setup_steps.append("auto_create_topics_enabled")
+        except AivenAPIError:
+            pass
+
+        state = step_select_kafka_service(state, service_name)
+        if setup_steps:
+            state.add_event("info", f"Auto-configured Kafka service: {', '.join(setup_steps)}")
+            from .migration import save_state as _save
+            _save(state)
+
+        result = state.to_dict()
+        result["setup_steps"] = setup_steps
+        return jsonify(result)
+
     except AivenAPIError as e:
         return jsonify({"error": f"Cannot connect to Kafka service '{service_name}': {e}"}), 400
-
-    state = step_select_kafka_service(state, service_name)
-    return jsonify(state.to_dict())
 
 
 # ── Step: Discover Source ────────────────────────────────────────────
